@@ -1,0 +1,8 @@
+- [x] `ai_analyzer.py` 中新增 `analyze_batch(records)` 方法，能汇总多条记录并调用AI生成综合报告
+- [x] `ai_routes.py` 中新增 `/api/ai/batch-report` 接口，接收 record_ids 数组并返回报告
+- [x] records.html 表头新增全选复选框，每行新增独立复选框
+- [x] 全选/取消全选逻辑正常工作，选中数量实时统计
+- [x] 未选中记录时"生成测试报告"按钮区域隐藏
+- [x] 点击"生成测试报告"后弹窗显示分析进度动画
+- [x] AI返回后在弹窗中以 Markdown 渲染展示综合测试报告
+- [x] AI接口未配置或调用失败时弹窗显示失败原因提示

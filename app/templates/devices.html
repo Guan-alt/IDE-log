@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+
+{% block title %}设备管理 - IDE 升级测试系统{% endblock %}
+
+{% block content %}
+<h1 class="page-title">设备管理</h1>
+
+<!-- 添加设备表单 -->
+<div class="card">
+    <h2 class="card-title">添加设备</h2>
+    <form id="addDeviceForm">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="deviceSn">设备 SN</label>
+                <input type="text" id="deviceSn" class="form-control" placeholder="请输入设备序列号" required>
+            </div>
+            <div class="form-group">
+                <label for="deviceName">设备名称</label>
+                <input type="text" id="deviceName" class="form-control" placeholder="请输入设备名称">
+            </div>
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary">添加设备</button>
+            </div>
+        </div>
+    </form>
+</div>
+
+<!-- 设备列表 -->
+<div class="card">
+    <h2 class="card-title">设备列表</h2>
+    <table class="table" id="deviceTable">
+        <thead>
+            <tr>
+                <th>设备 SN</th>
+                <th>设备名称</th>
+                <th>当前版本</th>
+                <th>状态</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody id="deviceTableBody">
+            <!-- 设备数据由 JS 动态填充 -->
+        </tbody>
+    </table>
+    <div class="empty-text" id="emptyTip" style="display:none;">暂无设备数据</div>
+</div>
+
+<!-- 版本查看模态框 -->
+<div class="modal" id="versionModal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <span class="modal-title">设备版本信息</span>
+            <button class="modal-close" onclick="hideModal('versionModal')">&times;</button>
+        </div>
+        <div class="modal-body" id="versionModalBody">
+            <!-- 版本信息由 JS 填充 -->
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    /* ===== 设备管理页面逻辑 ===== */
+
+    // 页面加载时获取设备列表
+    document.addEventListener('DOMContentLoaded', loadDevices);
+
+    // 加载设备列表
+    function loadDevices() {
+        apiGet('/api/devices').then(function(data) {
+            var list = data.devices || data || [];
+            renderDeviceTable(list);
+        }).catch(function(err) {
+            showToast('获取设备列表失败: ' + err.message, 'error');
+        });
+    }
+
+    // 渲染设备表格
+    function renderDeviceTable(devices) {
+        var tbody = document.getElementById('deviceTableBody');
+        var emptyTip = document.getElementById('emptyTip');
+        var table = document.getElementById('deviceTable');
+        tbody.innerHTML = '';
+
+        if (!devices || devices.length === 0) {
+            table.style.display = 'none';
+            emptyTip.style.display = 'block';
+            return;
+        }
+
+        table.style.display = 'table';
+        emptyTip.style.display = 'none';
+
+        devices.forEach(function(device) {
+            var sn = device.sn || device.serial_number || '';
+            var name = device.name || device.device_name || '-';
+            var version = device.current_version || device.version || '-';
+            var status = device.status || '未知';
+
+            // 状态标签样式
+            var statusClass = 'tag-info';
+            if (status === '在线' || status === 'online' || status === '空闲' || status === 'idle') {
+                statusClass = 'tag-success';
+            } else if (status === '升级中' || status === 'upgrading') {
+                statusClass = 'tag-warning';
+            } else if (status === '离线' || status === 'offline' || status === '异常') {
+                statusClass = 'tag-danger';
+            }
+
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td>' + escapeHtml(sn) + '</td>' +
+                '<td>' + escapeHtml(name) + '</td>' +
+                '<td>' + escapeHtml(version) + '</td>' +
+                '<td><span class="tag ' + statusClass + '">' + escapeHtml(status) + '</span></td>' +
+                '<td>' +
+                '<div class="action-group">' +
+                '<button class="btn btn-primary btn-sm" onclick="viewVersion(\'' + sn + '\')">查看版本</button>' +
+                '<button class="btn btn-danger btn-sm" onclick="deleteDevice(\'' + sn + '\')">删除</button>' +
+                '</div>' +
+                '</td>';
+            tbody.appendChild(tr);
+        });
+    }
+
+    // 添加设备表单提交
+    document.getElementById('addDeviceForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var sn = document.getElementById('deviceSn').value.trim();
+        var name = document.getElementById('deviceName').value.trim();
+
+        if (!sn) {
+            showToast('请输入设备 SN', 'error');
+            return;
+        }
+
+        apiPost('/api/devices', { sn: sn, name: name }).then(function() {
+            showToast('设备添加成功', 'success');
+            document.getElementById('addDeviceForm').reset();
+            loadDevices();
+        }).catch(function(err) {
+            showToast('添加设备失败: ' + err.message, 'error');
+        });
+    });
+
+    // 查看当前版本
+    function viewVersion(sn) {
+        apiGet('/api/devices/' + sn + '/version').then(function(data) {
+            var version = data.version || data.current_version || '-';
+            var info = data.version_info || data.info || '';
+            var html = '<div class="report-section">' +
+                '<h4>设备 SN</h4><p>' + escapeHtml(sn) + '</p>' +
+                '</div>' +
+                '<div class="report-section">' +
+                '<h4>当前版本</h4><p>' + escapeHtml(version) + '</p>' +
+                '</div>';
+            if (info) {
+                html += '<div class="report-section"><h4>版本信息</h4><p>' + escapeHtml(info) + '</p></div>';
+            }
+            document.getElementById('versionModalBody').innerHTML = html;
+            showModal('versionModal');
+        }).catch(function(err) {
+            showToast('获取版本信息失败: ' + err.message, 'error');
+        });
+    }
+
+    // 删除设备
+    function deleteDevice(sn) {
+        if (!confirm('确定要删除设备 ' + sn + ' 吗？')) {
+            return;
+        }
+        apiDelete('/api/devices?sn=' + encodeURIComponent(sn)).then(function() {
+            showToast('设备删除成功', 'success');
+            loadDevices();
+        }).catch(function(err) {
+            showToast('删除设备失败: ' + err.message, 'error');
+        });
+    }
+
+    // HTML 转义工具函数
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,47 @@
+# Checklist
+
+- [x] 项目目录结构正确创建（app/, static/, templates/, models/, instance/, logs/）
+- [x] requirements.txt 包含 Flask, requests, flask-cors, flask-sqlalchemy, pyserial, openai
+- [x] config.py 包含 OTA URL、Token、数据库路径、AI API Key、AI 模型、串口默认配置等默认配置
+- [x] Device 模型包含 id, sn, name, current_version, status, created_at 字段
+- [x] OtaRecord 模型包含 device_sn, target_version, result, duration, upgrade_percent, download_percent, start_time, end_time, fail_reason, serial_log_paths, ai_analysis 字段
+- [x] SerialConfig 模型包含 id, port, baudrate, name, device_sn, enabled, created_at 字段
+- [x] Setting 模型包含 ota_url, token, ota_timeout, ai_api_key, ai_model, ai_base_url, serial_default_baudrate 字段
+- [x] OTA API 客户端封装了 get_version, ota_start, get_progress 三个方法，逻辑与参考脚本一致
+- [x] 设备管理接口支持增删查（GET/POST/DELETE /api/devices）
+- [x] 获取版本接口调用 /device/infoBySN 并正确解析 ota_ver
+- [x] 发起升级接口调用 /ota/version/forceUpgrade 并检查 status==200，支持传入串口配置参数
+- [x] 查询进度接口调用 /ota/record/page 并返回 upgradePercent 和 downloadPercent
+- [x] 历史记录接口支持按设备SN和结果状态筛选
+- [x] 统计接口返回总次数、成功次数、失败次数、成功率、平均耗时
+- [x] 配置接口支持读取和更新 ota_url、token、ota_timeout、ai_api_key、ai_model、ai_base_url、serial_default_baudrate
+- [x] 串口管理接口：GET /api/serial/ports 列出可用串口
+- [x] 串口管理接口：GET/POST/DELETE /api/serial/configs 管理多串口配置（增删查）
+- [x] 串口管理接口：POST /api/serial/start 批量开始采集（支持多个串口同时启动）
+- [x] 串口管理接口：POST /api/serial/stop 批量停止采集
+- [x] 串口管理接口：GET /api/serial/logs/<config_id> 获取指定串口实时日志
+- [x] SerialLogger 类封装单个串口的打开、读取、关闭逻辑（使用 pyserial）
+- [x] SerialManager 管理器类管理多个 SerialLogger 实例（添加/删除/批量启动/批量停止）
+- [x] 每个串口独立后台线程读取数据到独立内存缓冲区
+- [x] 日志保存到文件功能（logs/serial_{串口名}_{SN}_{timestamp}.log，每个串口一个文件）
+- [x] 单个串口异常处理（仅停止异常串口，其他串口不受影响）
+- [x] AI 分析接口：POST /api/ai/analyze/<record_id> 自动分析失败日志
+- [x] AI 分析接口：GET /api/ai/report/<record_id> 查看分析报告
+- [x] AI 客户端类调用 AI API 分析串口日志（使用 openai SDK，支持 doubao 等模型）
+- [x] 分析 prompt 包含系统提示词（固件OTA分析专家，输出原因总结+各串口关键日志片段+建议方案）
+- [x] OTA 失败时自动触发 AI 分析的逻辑（读取并合并所有关联串口日志文件）
+- [x] 分析结果存储到 OtaRecord.ai_analysis 字段
+- [x] AI 分析失败处理（接口超时/文件不存在等，ai_analysis 记录"分析失败：{原因}"）
+- [x] 前端基础布局包含导航栏（设备管理、实时监控、历史记录、统计看板、设置）
+- [x] 设备管理页面支持添加、删除、查看设备列表
+- [x] 实时监控页面有下载进度条和升级进度条，每5秒轮询
+- [x] 实时监控页面有多串口配置管理（添加/删除串口配置、启用开关）
+- [x] 实时监控页面有多串口实时日志标签页切换（各串口日志独立展示）
+- [x] 历史记录页面有表格展示，支持筛选，结果有颜色标识（成功绿色/失败红色）
+- [x] 历史记录页面失败记录有"查看分析"和"重新分析"按钮
+- [x] 统计看板页面展示5个统计卡片，支持按设备筛选
+- [x] 设置页面有配置表单，可修改 OTA URL、Token、超时时间、串口默认波特率、AI API Key、AI 模型、AI API 地址
+- [x] AI 分析报告弹窗展示失败原因总结、各串口关键日志片段、建议解决方案
+- [x] app.py 主入口正确注册所有路由和蓝图
+- [x] 数据库在启动时自动初始化
+- [x] 平台可正常启动，所有页面可访问

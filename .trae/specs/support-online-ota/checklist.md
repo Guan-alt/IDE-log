@@ -1,0 +1,8 @@
+- [x] Setting 模型新增 `ota_url_online` 和 `token_online` 字段，`to_dict()` 返回
+- [x] `get_ota_client(ota_type)` 根据参数返回线下/线上环境的 OtaClient
+- [x] `start_ota`、`start_cycle`、`get_progress`、`_start_ota_leg`、`_continue_cycle` 接口支持 `ota_type` 参数
+- [x] 设置页面新增线上OTA URL和Token输入框，可保存和加载
+- [x] 监控页面新增"线下OTA"/"线上OTA"切换按钮
+- [x] 环境选择持久化到 localStorage，切页返回不丢失
+- [x] 发起OTA时请求参数携带 `ota_type`，进度轮询也携带
+- [x] 页面加载时恢复上次选择的环境

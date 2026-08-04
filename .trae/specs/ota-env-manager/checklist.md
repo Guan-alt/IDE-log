@@ -1,0 +1,27 @@
+- [x] `OtaEnvironment` 模型字段完整：id/user_id/name/ota_url/token/sort_order/created_at/updated_at
+- [x] `OtaEnvironment` 有 `UniqueConstraint(user_id, name)` 约束
+- [x] `OtaEnvironment.to_dict()` 返回所有字段
+- [x] 数据库迁移：admin 用户启动时若 `OtaEnvironment` 表为空，按 `Setting.ota_url`/`token_online` 种子"线下"/"线上"环境
+- [x] 迁移只执行一次（第二次启动不重复创建）
+- [x] `app/__init__.py` 引入并注册 `ota_envs_bp` 蓝图
+- [x] `GET /api/ota-envs` 返回当前用户所有环境，按 sort_order 升序
+- [x] `POST /api/ota-envs` 校验 name/ota_url/token 非空
+- [x] `POST /api/ota-envs` 校验同用户下 name 唯一，重复时返回 400
+- [x] `PUT /api/ota-envs/<id>` 支持部分字段更新
+- [x] `PUT /api/ota-envs/<id>` 校验 name 唯一性时排除自身
+- [x] `DELETE /api/ota-envs/<id>` 跨用户访问返回 404
+- [x] `get_ota_client(env_id, user_id)` 按 env_id 查 OtaEnvironment
+- [x] `get_ota_client` 未传 env_id 或查不到时回退到第一个环境或 Setting 默认
+- [x] `start_ota` 从请求体读 `env_id` 替代 `ota_type`
+- [x] `start_ota_cycle` 从请求体读 `env_id`；cycling_tasks 字典用 `env_id` 键
+- [x] `_start_ota_leg` 签名参数为 `env_id`，`_continue_cycle` 传入 `task.get('env_id')`
+- [x] 设置页面移除 4 个硬编码 OTA URL/Token 输入框
+- [x] 设置页面新增"OTA 环境管理"卡片，列表展示环境
+- [x] 设置页面弹窗表单支持新建和编辑模式
+- [x] 设置页面 URL/Token 在列表中脱敏显示（如 `https://***`、`***xxx`）
+- [x] 监控页面 OTA 环境下拉从 `/api/ota-envs` 动态加载
+- [x] 监控页面 `localStorage` 持久化 `ota_env_id`
+- [x] 监控页面 `submitSingleOta` / `submitCycleOta` 提交 `env_id`
+- [x] 旧的 `ota_type` 参数在前后端完全移除（无遗留引用）
+- [x] 启动应用无报错，迁移日志正常输出
+- [x] 老用户已有的线下/线上配置迁移为 OtaEnvironment 条目，发起 OTA 仍可正常工作

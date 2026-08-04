@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+
+{% block title %}设置 - IDE 升级测试系统{% endblock %}
+
+{% block content %}
+<h1 class="page-title">系统设置</h1>
+
+<!-- OTA 环境管理 -->
+<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 class="card-title" style="margin:0;">OTA 环境管理</h2>
+        <button class="btn btn-success btn-sm" onclick="openEnvModal()">+ 新增环境</button>
+    </div>
+    <div id="envListContainer">
+        <div class="empty-text">加载中...</div>
+    </div>
+</div>
+
+<!-- 配置表单 -->
+<div class="card">
+    <h2 class="card-title">基础配置</h2>
+    <form id="settingsForm">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="timeout">超时时间（秒）</label>
+                <input type="number" id="timeout" class="form-control" placeholder="例如: 300" min="1">
+            </div>
+            <div class="form-group">
+                <label for="defaultBaudrate">串口默认波特率</label>
+                <select id="defaultBaudrate" class="form-control">
+                    <option value="9600">9600</option>
+                    <option value="19200">19200</option>
+                    <option value="38400">38400</option>
+                    <option value="57600">57600</option>
+                    <option value="115200">115200</option>
+                    <option value="230400">230400</option>
+                    <option value="460800">460800</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="mt-16" style="border-top: 1px solid #f1f5f9; padding-top: 24px;">
+            <h2 class="card-title">AI 分析配置</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="aiApiKey">AI API Key</label>
+                    <input type="password" id="aiApiKey" class="form-control" placeholder="AI 接口密钥">
+                </div>
+                <div class="form-group">
+                    <label for="aiModel">AI 模型</label>
+                    <input type="text" id="aiModel" class="form-control" placeholder="例如: gpt-4o / doubao-pro">
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="aiApiUrl">AI API 地址</label>
+                <input type="text" id="aiApiUrl" class="form-control" placeholder="例如: https://api.openai.com/v1">
+            </div>
+        </div>
+
+        <div class="mt-16">
+            <button type="submit" class="btn btn-primary">保存配置</button>
+        </div>
+    </form>
+</div>
+
+<!-- 环境编辑弹窗 -->
+<div id="envModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999;">
+    <div style="background:#fff; margin:6% auto; padding:24px; border-radius:8px; max-width:560px; width:90%;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h2 id="envModalTitle" style="margin:0;">新增环境</h2>
+            <button class="btn btn-secondary" onclick="closeEnvModal()">&times;</button>
+        </div>
+        <form id="envForm" onsubmit="event.preventDefault(); submitEnvForm();">
+            <input type="hidden" id="envId">
+            <div class="form-group">
+                <label for="envName">环境名称 <span style="color:#dc2626;">*</span></label>
+                <input type="text" id="envName" class="form-control" placeholder="如：线下 / 线上 / 预发布" required maxlength="100">
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label for="envUrl">OTA 升级地址 <span style="color:#dc2626;">*</span></label>
+                <input type="text" id="envUrl" class="form-control" placeholder="https://xxx.lockin.com" required>
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label for="envToken">OTA Token</label>
+                <input type="text" id="envToken" class="form-control" placeholder="认证 Token">
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label for="envSort">排序（数字越小越靠前）</label>
+                <input type="number" id="envSort" class="form-control" value="0" min="0">
+            </div>
+            <div style="margin-top:16px; text-align:right;">
+                <button type="button" class="btn btn-secondary" onclick="closeEnvModal()" style="margin-right:8px;">取消</button>
+                <button type="submit" class="btn btn-primary" id="envSubmitBtn">保存</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    /* ===== 设置页面逻辑 ===== */
+
+    // 页面加载时获取当前配置
+    document.addEventListener('DOMContentLoaded', loadSettings);
+
+    // 加载配置
+    function loadSettings() {
+        apiGet('/api/settings').then(function(data) {
+            var cfg = data.settings || data || {};
+            document.getElementById('timeout').value = cfg.ota_timeout || '';
+            document.getElementById('defaultBaudrate').value = cfg.serial_default_baudrate || '115200';
+            document.getElementById('aiApiKey').value = cfg.ai_api_key || '';
+            document.getElementById('aiModel').value = cfg.ai_model || '';
+            document.getElementById('aiApiUrl').value = cfg.ai_base_url || '';
+        }).catch(function(err) {
+            showToast('获取配置失败: ' + err.message, 'error');
+        });
+    }
+
+    // 保存配置表单提交
+    document.getElementById('settingsForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        var payload = {
+            ota_timeout: parseInt(document.getElementById('timeout').value) || 300,
+            serial_default_baudrate: parseInt(document.getElementById('defaultBaudrate').value) || 115200,
+            ai_api_key: document.getElementById('aiApiKey').value.trim(),
+            ai_model: document.getElementById('aiModel').value.trim(),
+            ai_base_url: document.getElementById('aiApiUrl').value.trim()
+        };
+
+        apiPost('/api/settings', payload).then(function() {
+            showToast('配置保存成功', 'success');
+        }).catch(function(err) {
+            showToast('保存配置失败: ' + err.message, 'error');
+        });
+    });
+
+    /* ===== OTA 环境管理 ===== */
+
+    document.addEventListener('DOMContentLoaded', loadEnvList);
+
+    function loadEnvList() {
+        apiGet('/api/ota-envs').then(function(data) {
+            var envs = (data && data.envs) || [];
+            renderEnvList(envs);
+        }).catch(function(err) {
+            showToast('获取环境列表失败: ' + err.message, 'error');
+        });
+    }
+
+    function renderEnvList(envs) {
+        var container = document.getElementById('envListContainer');
+        if (!envs || envs.length === 0) {
+            container.innerHTML = '<div class="empty-text">暂无 OTA 环境，点击"新增环境"创建</div>';
+            return;
+        }
+        var html = '<table class="env-table" style="width:100%; border-collapse:collapse;">';
+        html += '<thead><tr style="background:#f8fafc; text-align:left;">';
+        html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">名称</th>';
+        html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">OTA 地址</th>';
+        html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">Token</th>';
+        html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">排序</th>';
+        html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0; text-align:right;">操作</th>';
+        html += '</tr></thead><tbody>';
+        envs.forEach(function(env) {
+            html += '<tr style="border-bottom:1px solid #f1f5f9;">';
+            html += '<td style="padding:10px;"><strong>' + escapeHtml(env.name) + '</strong></td>';
+            html += '<td style="padding:10px; color:#475569; font-size:13px;">' + escapeHtml(maskUrl(env.ota_url)) + '</td>';
+            html += '<td style="padding:10px; color:#475569; font-size:13px;">' + escapeHtml(maskToken(env.token)) + '</td>';
+            html += '<td style="padding:10px; color:#475569;">' + env.sort_order + '</td>';
+            html += '<td style="padding:10px; text-align:right;">';
+            html += '<button class="btn btn-primary btn-sm" onclick="openEnvModal(' + env.id + ')">编辑</button> ';
+            html += '<button class="btn btn-danger btn-sm" onclick="deleteEnv(' + env.id + ',\'' + escapeAttr(env.name) + '\')">删除</button>';
+            html += '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    }
+
+    function maskUrl(url) {
+        if (!url) return '';
+        // 显示协议+主机前6字符，其余脱敏
+        try {
+            var m = url.match(/^(https?:\/\/)([^\/]+)/i);
+            if (m) {
+                var host = m[2];
+                var masked = host.length > 8 ? host.substring(0, 6) + '***' + host.substring(host.length - 2) : host;
+                return m[1] + masked;
+            }
+        } catch (e) {}
+        return url;
+    }
+
+    function maskToken(token) {
+        if (!token) return '<span style="color:#cbd5e1;">(空)</span>';
+        if (token.length <= 6) return '***';
+        return token.substring(0, 3) + '***' + token.substring(token.length - 3);
+    }
+
+    var _envCache = [];
+    function openEnvModal(id) {
+        var modal = document.getElementById('envModal');
+        var title = document.getElementById('envModalTitle');
+        var submitBtn = document.getElementById('envSubmitBtn');
+        document.getElementById('envForm').reset();
+        document.getElementById('envId').value = '';
+
+        if (id) {
+            // 编辑模式
+            apiGet('/api/ota-envs').then(function(data) {
+                var envs = (data && data.envs) || [];
+                var env = envs.find(function(e) { return e.id === id; });
+                if (!env) { showToast('环境不存在', 'error'); return; }
+                document.getElementById('envId').value = env.id;
+                document.getElementById('envName').value = env.name;
+                document.getElementById('envUrl').value = env.ota_url;
+                document.getElementById('envToken').value = env.token || '';
+                document.getElementById('envSort').value = env.sort_order || 0;
+                title.textContent = '编辑环境：' + env.name;
+                submitBtn.textContent = '保存修改';
+                modal.style.display = 'block';
+            });
+        } else {
+            title.textContent = '新增环境';
+            submitBtn.textContent = '创建环境';
+            modal.style.display = 'block';
+            setTimeout(function() { document.getElementById('envName').focus(); }, 100);
+        }
+    }
+
+    function closeEnvModal() {
+        document.getElementById('envModal').style.display = 'none';
+    }
+
+    function submitEnvForm() {
+        var id = document.getElementById('envId').value;
+        var payload = {
+            name: document.getElementById('envName').value.trim(),
+            ota_url: document.getElementById('envUrl').value.trim(),
+            token: document.getElementById('envToken').value.trim(),
+            sort_order: parseInt(document.getElementById('envSort').value) || 0
+        };
+        if (!payload.name || !payload.ota_url) {
+            showToast('名称和地址不能为空', 'error');
+            return;
+        }
+        if (id) {
+            // 更新
+            apiPut('/api/ota-envs/' + id, payload).then(function(data) {
+                if (data.success) {
+                    showToast('环境已更新', 'success');
+                    closeEnvModal();
+                    loadEnvList();
+                } else {
+                    showToast(data.error || '更新失败', 'error');
+                }
+            }).catch(function(err) { showToast('更新失败: ' + err.message, 'error'); });
+        } else {
+            // 新建
+            apiPost('/api/ota-envs', payload).then(function(data) {
+                if (data.success) {
+                    showToast('环境已创建', 'success');
+                    closeEnvModal();
+                    loadEnvList();
+                } else {
+                    showToast(data.error || '创建失败', 'error');
+                }
+            }).catch(function(err) { showToast('创建失败: ' + err.message, 'error'); });
+        }
+    }
+
+    function deleteEnv(id, name) {
+        if (!confirm('确定要删除环境"' + name + '"吗？此操作不可撤销。')) return;
+        apiDelete('/api/ota-envs/' + id).then(function(data) {
+            if (data.success) {
+                showToast('环境已删除', 'success');
+                loadEnvList();
+            } else {
+                showToast(data.error || '删除失败', 'error');
+            }
+        }).catch(function(err) { showToast('删除失败: ' + err.message, 'error'); });
+    }
+
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function escapeAttr(str) {
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/'/g, "\\'");
+    }
+</script>
+{% endblock %}

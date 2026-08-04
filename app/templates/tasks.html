@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+
+{% block title %}测试任务 - IDE 升级测试系统{% endblock %}
+
+{% block content %}
+<h1 class="page-title">测试任务</h1>
+
+<!-- 顶部操作栏 -->
+<div class="card">
+    <div class="filter-bar">
+        <div class="form-group">
+            <label for="filterStatus">状态筛选</label>
+            <select id="filterStatus" class="form-control">
+                <option value="">全部任务</option>
+                <option value="进行中">进行中</option>
+                <option value="已完成">已完成</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <button class="btn btn-primary" onclick="loadTasks()">查询</button>
+            <button class="btn btn-success" onclick="openCreateModal()">新建任务</button>
+        </div>
+    </div>
+</div>
+
+<!-- 任务卡片列表 -->
+<div class="card">
+    <h2 class="card-title">任务列表</h2>
+    <div id="taskListContainer">
+        <div class="empty-text">加载中...</div>
+    </div>
+</div>
+
+<!-- 新建任务弹窗 -->
+<div id="createModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999;">
+    <div style="background:#fff; margin:8% auto; padding:24px; border-radius:8px; max-width:560px; width:90%;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h2 style="margin:0;">新建测试任务</h2>
+            <button class="btn btn-secondary" onclick="closeCreateModal()">&times;</button>
+        </div>
+        <form id="createForm" onsubmit="event.preventDefault(); submitCreate();">
+            <div class="form-group">
+                <label for="taskName">任务名称 <span style="color:#dc2626;">*</span></label>
+                <input type="text" id="taskName" class="form-control" placeholder="如：v2.3.0回归测试" required maxlength="200">
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label for="taskDesc">任务描述</label>
+                <textarea id="taskDesc" class="form-control" rows="4" placeholder="选填，描述本次测试任务的目的、范围、备注等" style="resize:vertical; min-height:100px;"></textarea>
+            </div>
+            <div style="margin-top:16px; text-align:right;">
+                <button type="button" class="btn btn-secondary" onclick="closeCreateModal()" style="margin-right:8px;">取消</button>
+                <button type="submit" class="btn btn-primary">创建任务</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    /* ===== 测试任务管理页面逻辑 ===== */
+
+    document.addEventListener('DOMContentLoaded', function() {
+        loadTasks();
+        document.getElementById('filterStatus').addEventListener('change', loadTasks);
+    });
+
+    function loadTasks() {
+        var status = document.getElementById('filterStatus').value;
+        var url = '/api/tasks' + (status ? ('?status=' + encodeURIComponent(status)) : '');
+        apiGet(url).then(function(data) {
+            renderTasks(data.tasks || []);
+        }).catch(function(err) {
+            showToast('获取任务列表失败: ' + err.message, 'error');
+        });
+    }
+
+    function renderTasks(tasks) {
+        var container = document.getElementById('taskListContainer');
+        if (!tasks || tasks.length === 0) {
+            container.innerHTML = '<div class="empty-text">暂无测试任务，点击"新建任务"创建</div>';
+            return;
+        }
+
+        var html = '<div class="task-grid">';
+        tasks.forEach(function(task) {
+            var statusClass = task.status === '进行中' ? 'tag-success' : 'tag-info';
+            var endBtn = task.status === '进行中'
+                ? '<button class="btn btn-warning btn-sm" onclick="endTask(' + task.id + ')">结束任务</button>'
+                : '';
+            var delBtn = (!task.record_count || task.record_count === 0)
+                ? '<button class="btn btn-danger btn-sm" onclick="deleteTask(' + task.id + ',\'' + escapeAttr(task.name) + '\')">删除</button>'
+                : '';
+            var descHtml = task.description
+                ? '<div class="task-desc">' + escapeHtml(task.description) + '</div>'
+                : '';
+            var endedHtml = task.ended_at
+                ? '<span class="task-meta">结束：' + escapeHtml(task.ended_at) + '</span>'
+                : '';
+
+            html +=
+                '<div class="task-card">' +
+                    '<div class="task-header">' +
+                        '<div class="task-title">' + escapeHtml(task.name) + '</div>' +
+                        '<span class="tag ' + statusClass + '">' + escapeHtml(task.status) + '</span>' +
+                    '</div>' +
+                    descHtml +
+                    '<div class="task-footer">' +
+                        '<span class="task-meta">记录数：<strong>' + (task.record_count || 0) + '</strong></span>' +
+                        '<span class="task-meta">创建：' + escapeHtml(task.created_at || '-') + '</span>' +
+                        endedHtml +
+                    '</div>' +
+                    '<div class="task-actions">' +
+                        endBtn + delBtn +
+                    '</div>' +
+                '</div>';
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    function openCreateModal() {
+        document.getElementById('taskName').value = '';
+        document.getElementById('taskDesc').value = '';
+        document.getElementById('createModal').style.display = 'block';
+        setTimeout(function() { document.getElementById('taskName').focus(); }, 100);
+    }
+
+    function closeCreateModal() {
+        document.getElementById('createModal').style.display = 'none';
+    }
+
+    function submitCreate() {
+        var name = document.getElementById('taskName').value.trim();
+        var description = document.getElementById('taskDesc').value.trim();
+        if (!name) { showToast('请输入任务名称', 'error'); return; }
+
+        apiPost('/api/tasks', { name: name, description: description }).then(function(data) {
+            if (data.success) {
+                showToast('任务创建成功', 'success');
+                closeCreateModal();
+                loadTasks();
+            } else {
+                showToast(data.error || '创建失败', 'error');
+            }
+        }).catch(function(err) {
+            showToast('创建失败: ' + err.message, 'error');
+        });
+    }
+
+    function endTask(id) {
+        if (!confirm('确定要结束此测试任务吗？结束后状态变为"已完成"，但已有OTA记录不受影响。')) return;
+        apiPost('/api/tasks/' + id + '/end', {}).then(function(data) {
+            if (data.success) {
+                showToast('任务已结束', 'success');
+                loadTasks();
+            } else {
+                showToast(data.error || '结束失败', 'error');
+            }
+        }).catch(function(err) {
+            showToast('结束失败: ' + err.message, 'error');
+        });
+    }
+
+    function deleteTask(id, name) {
+        if (!confirm('确定要删除任务"' + name + '"吗？仅当任务无关联OTA记录时可删除。')) return;
+        apiDelete('/api/tasks/' + id).then(function(data) {
+            if (data.success) {
+                showToast('任务已删除', 'success');
+                loadTasks();
+            } else {
+                showToast(data.error || '删除失败', 'error');
+            }
+        }).catch(function(err) {
+            showToast('删除失败: ' + err.message, 'error');
+        });
+    }
+
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function escapeAttr(str) {
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/'/g, "\\'");
+    }
+</script>
+
+<style>
+    .task-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+        gap: 16px;
+    }
+    .task-card {
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        transition: box-shadow 0.2s, transform 0.2s;
+    }
+    .task-card:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        transform: translateY(-2px);
+    }
+    .task-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+    }
+    .task-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #1e293b;
+        flex: 1;
+        word-break: break-all;
+    }
+    .task-desc {
+        color: #475569;
+        font-size: 13px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        background: #f8fafc;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border-left: 3px solid #6366f1;
+    }
+    .task-footer {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 12px;
+        color: #64748b;
+        border-top: 1px dashed #e2e8f0;
+        padding-top: 8px;
+    }
+    .task-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+</style>
+{% endblock %}

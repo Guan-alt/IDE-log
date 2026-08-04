@@ -1,0 +1,6 @@
+- [x] `stop-cycle` 接口将任务状态设为 `stopping`，当前OTA继续执行
+- [x] `get_progress` 中 `is_finished=True` 时检测 stopping 标志，删除当前OtaRecord
+- [x] 删除记录后将任务状态改为 `stopped`，触发循环AI分析
+- [x] 不发起新的OTA轮次（不调用 `_continue_cycle_after_wait`）
+- [x] `_continue_cycle_after_wait` 等待结束后检查 stopping 标志，直接终止循环
+- [x] 等待中停止时不会创建新的OTA记录

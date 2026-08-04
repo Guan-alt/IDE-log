@@ -1,0 +1,488 @@
+{% extends "base.html" %}
+
+{% block title %}数据仪表盘 - IDE 升级测试系统{% endblock %}
+
+{% block content %}
+<h1 class="page-title">数据仪表盘</h1>
+
+<!-- 顶部筛选栏 -->
+<div class="card">
+    <div class="filter-bar">
+        <div class="form-group">
+            <label for="statsDeviceSelect">选择设备</label>
+            <select id="statsDeviceSelect" class="form-control">
+                <option value="">全部设备</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="statsTaskSelect">测试任务</label>
+            <select id="statsTaskSelect" class="form-control">
+                <option value="">全部任务</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <button class="btn btn-primary" onclick="loadDashboard()">查询</button>
+        </div>
+    </div>
+</div>
+
+<!-- 数据概览卡片 -->
+<div class="card">
+    <h2 class="card-title">数据概览</h2>
+    <div class="stats-grid">
+        <div class="stat-card primary">
+            <div class="stat-icon">📊</div>
+            <div class="stat-label">总测试次数</div>
+            <div class="stat-value" id="statTotal">0</div>
+            <div class="stat-change" id="statTotalChange"></div>
+        </div>
+        <div class="stat-card success">
+            <div class="stat-icon">✅</div>
+            <div class="stat-label">成功次数</div>
+            <div class="stat-value" id="statSuccess">0</div>
+            <div class="stat-change" id="statSuccessChange"></div>
+        </div>
+        <div class="stat-card danger">
+            <div class="stat-icon">❌</div>
+            <div class="stat-label">失败次数</div>
+            <div class="stat-value" id="statFail">0</div>
+            <div class="stat-change" id="statFailChange"></div>
+        </div>
+        <div class="stat-card warning">
+            <div class="stat-icon">📈</div>
+            <div class="stat-label">成功率</div>
+            <div class="stat-value" id="statRate">0%</div>
+            <div class="stat-change" id="statRateChange"></div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon">⏱️</div>
+            <div class="stat-label">平均耗时</div>
+            <div class="stat-value" id="statAvgDuration">0秒</div>
+            <div class="stat-change" id="statAvgDurationChange"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 测试趋势折线图 -->
+<div class="card chart-card">
+    <div class="chart-header">
+        <h2 class="card-title">测试趋势</h2>
+        <div class="chart-tabs">
+            <button class="chart-tab active" onclick="loadTrend(7)">近7天</button>
+            <button class="chart-tab" onclick="loadTrend(30)">近30天</button>
+        </div>
+    </div>
+    <canvas id="trendChart"></canvas>
+</div>
+
+<!-- 失败原因饼图 + 版本柱状图 -->
+<div class="dashboard-row">
+    <div class="card chart-card">
+        <h2 class="card-title">失败原因分布</h2>
+        <canvas id="failReasonChart"></canvas>
+    </div>
+    <div class="card chart-card">
+        <h2 class="card-title">版本升级统计</h2>
+        <canvas id="versionChart"></canvas>
+    </div>
+</div>
+
+<!-- 设备测试排行 -->
+<div class="card">
+    <h2 class="card-title">设备测试排行</h2>
+    <table class="data-table ranking-table">
+        <thead>
+            <tr>
+                <th>排名</th>
+                <th>设备SN</th>
+                <th>测试次数</th>
+                <th>成功</th>
+                <th>失败</th>
+                <th>成功率</th>
+            </tr>
+        </thead>
+        <tbody id="deviceRankingBody">
+            <tr><td colspan="6" class="empty-text">加载中...</td></tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+    /* ===== 数据仪表盘页面逻辑 ===== */
+
+    // 图表实例（全局，更新前先 destroy）
+    var trendChartInstance = null;
+    var failReasonChartInstance = null;
+    var versionChartInstance = null;
+    // 当前趋势天数（默认 7 天，切换设备时保持）
+    var currentTrendDays = 7;
+
+    // 页面加载时初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        loadDeviceOptions();
+        loadTaskOptions();
+        // 设备选择变化时自动刷新
+        document.getElementById('statsDeviceSelect').addEventListener('change', function() {
+            loadDashboard();
+        });
+        // 任务选择变化时自动刷新
+        document.getElementById('statsTaskSelect').addEventListener('change', function() {
+            loadDashboard();
+        });
+        // 加载全部仪表盘数据（默认全部）
+        loadDashboard();
+    });
+
+    /* ---------- 任务选项 ---------- */
+    function loadTaskOptions() {
+        apiGet('/api/tasks').then(function(data) {
+            var tasks = (data && data.tasks) || [];
+            var select = document.getElementById('statsTaskSelect');
+            tasks.forEach(function(t) {
+                var opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.name + (t.status === '进行中' ? '' : ' [' + t.status + ']');
+                select.appendChild(opt);
+            });
+        }).catch(function() {});
+    }
+
+    /* ---------- 工具函数 ---------- */
+
+    // 拼接 URL 查询参数
+    function buildUrl(base, params) {
+        var pairs = [];
+        for (var k in params) {
+            if (params.hasOwnProperty(k) && params[k] !== undefined && params[k] !== null && params[k] !== '') {
+                pairs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+            }
+        }
+        return base + (pairs.length ? '?' + pairs.join('&') : '');
+    }
+
+    // HTML 转义
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // 格式化平均耗时：>=60秒显示"X分Y秒"，否则"X.X秒"
+    function fmtDuration(sec) {
+        var n = Number(sec);
+        if (!isFinite(n)) return '0秒';
+        if (n >= 60) {
+            var min = Math.floor(n / 60);
+            var s = Math.floor(n % 60);
+            return min + '分' + s + '秒';
+        }
+        return n.toFixed(1) + '秒';
+    }
+
+    // 格式化环比变化 HTML
+    // value>0 显示 ↑ {value} (+{pct}%) 绿色；value<0 显示 ↓ {value} ({pct}%) 红色；value=0 不显示
+    function formatChange(change) {
+        if (!change) return '';
+        var value = Number(change.value);
+        if (!isFinite(value) || value === 0) return '';
+        var pctNum = Number(change.pct);
+        var pctStr = '';
+        if (isFinite(pctNum)) {
+            var s = pctNum.toFixed(1);
+            if (s === '-0.0') s = '0.0';
+            // 去掉多余的 .0
+            if (s.indexOf('.') >= 0 && s.slice(-2) === '.0') s = s.slice(0, -2);
+            pctStr = ' (' + (pctNum > 0 ? '+' : '') + s + '%)';
+        }
+        if (value > 0) {
+            return '<span class="up">↑ ' + value + pctStr + '</span>';
+        }
+        return '<span class="down">↓ ' + Math.abs(value) + pctStr + '</span>';
+    }
+
+    /* ---------- 设备选项 ---------- */
+
+    function loadDeviceOptions() {
+        apiGet('/api/devices').then(function(data) {
+            var list = data.devices || data || [];
+            var select = document.getElementById('statsDeviceSelect');
+            list.forEach(function(device) {
+                var sn = device.sn || device.serial_number || '';
+                var name = device.name || device.device_name || '';
+                var option = document.createElement('option');
+                option.value = sn;
+                option.textContent = name ? (name + ' (' + sn + ')') : sn;
+                select.appendChild(option);
+            });
+        }).catch(function(err) {
+            showToast('获取设备列表失败: ' + err.message, 'error');
+        });
+    }
+
+    /* ---------- 仪表盘主加载 ---------- */
+
+    // 并行调用 5 个 API，更新卡片+环比、渲染图表、填充排行表
+    function loadDashboard(sn) {
+        sn = (sn !== undefined && sn !== null) ? sn : document.getElementById('statsDeviceSelect').value;
+        var taskId = document.getElementById('statsTaskSelect').value || '';
+
+        var overviewUrl = buildUrl('/api/stats/overview', { sn: sn, task_id: taskId });
+        var trendUrl = buildUrl('/api/stats/trend', { days: currentTrendDays, sn: sn, task_id: taskId });
+        var failUrl = buildUrl('/api/stats/fail-reasons', { sn: sn, task_id: taskId });
+        var versionUrl = buildUrl('/api/stats/version-stats', { sn: sn, task_id: taskId });
+        var rankingUrl = buildUrl('/api/stats/device-ranking', { sn: sn, task_id: taskId });
+
+        Promise.all([
+            apiGet(overviewUrl),
+            apiGet(trendUrl),
+            apiGet(failUrl),
+            apiGet(versionUrl),
+            apiGet(rankingUrl)
+        ]).then(function(results) {
+            updateOverviewCards(results[0]);
+            renderTrendChart(results[1]);
+            renderFailReasonChart(results[2]);
+            renderVersionChart(results[3]);
+            renderDeviceRanking(results[4]);
+        }).catch(function(err) {
+            showToast('加载仪表盘数据失败: ' + err.message, 'error');
+        });
+    }
+
+    // 更新数据概览卡片 + 环比变化
+    function updateOverviewCards(overview) {
+        overview = overview || {};
+        document.getElementById('statTotal').textContent = overview.total_tests || 0;
+        document.getElementById('statSuccess').textContent = overview.success_count || 0;
+        document.getElementById('statFail').textContent = overview.fail_count || 0;
+
+        // 成功率
+        var rate = Number(overview.success_rate);
+        document.getElementById('statRate').textContent = isFinite(rate) && overview.success_rate !== undefined && overview.success_rate !== null
+            ? rate.toFixed(1) + '%' : '0%';
+
+        // 平均耗时
+        document.getElementById('statAvgDuration').textContent = fmtDuration(overview.avg_duration);
+
+        // 环比变化
+        var ch = overview.changes || {};
+        setChange('statTotalChange', ch.total_tests);
+        setChange('statSuccessChange', ch.success_count);
+        setChange('statFailChange', ch.fail_count);
+        setChange('statRateChange', ch.success_rate);
+        setChange('statAvgDurationChange', ch.avg_duration);
+    }
+
+    function setChange(elId, change) {
+        var el = document.getElementById(elId);
+        if (el) el.innerHTML = formatChange(change);
+    }
+
+    /* ---------- 趋势切换 ---------- */
+
+    // 切换 7 天 / 30 天，更新折线图与按钮 active 状态
+    function loadTrend(days) {
+        currentTrendDays = days;
+
+        // 切换按钮 active 状态
+        var tabs = document.querySelectorAll('.chart-tab');
+        tabs.forEach(function(btn) {
+            var oc = btn.getAttribute('onclick') || '';
+            if (oc.indexOf('loadTrend(' + days + ')') >= 0) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+
+        var sn = document.getElementById('statsDeviceSelect').value;
+        var taskId = document.getElementById('statsTaskSelect').value || '';
+        var url = buildUrl('/api/stats/trend', { days: days, sn: sn, task_id: taskId });
+
+        apiGet(url).then(function(data) {
+            renderTrendChart(data);
+        }).catch(function(err) {
+            showToast('获取趋势数据失败: ' + err.message, 'error');
+        });
+    }
+
+    /* ---------- 图表渲染 ---------- */
+
+    // 折线图：成功(绿) + 失败(红)
+    function renderTrendChart(data) {
+        var canvas = document.getElementById('trendChart');
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        if (trendChartInstance) { trendChartInstance.destroy(); trendChartInstance = null; }
+
+        data = data || {};
+        var dates = data.dates || [];
+        var success = data.success || [];
+        var fail = data.fail || [];
+
+        trendChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: dates,
+                datasets: [
+                    {
+                        label: '成功',
+                        data: success,
+                        borderColor: '#16a34a',
+                        backgroundColor: 'rgba(22,163,74,0.15)',
+                        fill: true,
+                        tension: 0.35,
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
+                    },
+                    {
+                        label: '失败',
+                        data: fail,
+                        borderColor: '#dc2626',
+                        backgroundColor: 'rgba(220,38,38,0.15)',
+                        fill: true,
+                        tension: 0.35,
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true, ticks: { precision: 0 } }
+                },
+                plugins: {
+                    legend: { position: 'top' }
+                }
+            }
+        });
+    }
+
+    // 饼图：失败原因分布（Chart.js 默认调色盘）
+    function renderFailReasonChart(data) {
+        var canvas = document.getElementById('failReasonChart');
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        if (failReasonChartInstance) { failReasonChartInstance.destroy(); failReasonChartInstance = null; }
+
+        data = data || {};
+        var reasons = data.reasons || [];
+        var total = data.total || 0;
+        // Chart.js 经典默认调色盘
+        var palette = ['#36A2EB', '#FF6384', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#C9CBCF', '#7CB342', '#E91E63', '#00ACC1'];
+
+        failReasonChartInstance = new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: reasons.map(function(r) { return r.reason || '未知'; }),
+                datasets: [{
+                    data: reasons.map(function(r) { return r.count || 0; }),
+                    backgroundColor: palette,
+                    borderWidth: 1,
+                    borderColor: '#fff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'right' },
+                    tooltip: {
+                        callbacks: {
+                            label: function(item) {
+                                var val = item.parsed;
+                                var pct = total ? (val / total * 100).toFixed(1) : '0';
+                                return item.label + ': ' + val + ' (' + pct + '%)';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // 柱状图：各版本 成功 + 失败 堆叠
+    function renderVersionChart(data) {
+        var canvas = document.getElementById('versionChart');
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        if (versionChartInstance) { versionChartInstance.destroy(); versionChartInstance = null; }
+
+        data = data || {};
+        var versions = data.versions || [];
+
+        versionChartInstance = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: versions.map(function(v) { return v.version || '-'; }),
+                datasets: [
+                    {
+                        label: '成功',
+                        data: versions.map(function(v) { return v.success || 0; }),
+                        backgroundColor: '#16a34a',
+                        borderWidth: 0
+                    },
+                    {
+                        label: '失败',
+                        data: versions.map(function(v) { return v.fail || 0; }),
+                        backgroundColor: '#dc2626',
+                        borderWidth: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { stacked: true },
+                    y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } }
+                },
+                plugins: {
+                    legend: { position: 'top' }
+                }
+            }
+        });
+    }
+
+    /* ---------- 设备排行表 ---------- */
+
+    function renderDeviceRanking(data) {
+        var tbody = document.getElementById('deviceRankingBody');
+        if (!tbody) return;
+        data = data || {};
+        var devices = data.devices || [];
+        tbody.innerHTML = '';
+
+        if (!devices.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-text">暂无设备数据</td></tr>';
+            return;
+        }
+
+        devices.forEach(function(d, i) {
+            var rate = Number(d.success_rate);
+            var rateText = isFinite(rate) && d.success_rate !== undefined && d.success_rate !== null
+                ? rate.toFixed(1) + '%' : '-';
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td class="rank-cell">' + (i + 1) + '</td>' +
+                '<td>' + escapeHtml(d.device_sn || '') + '</td>' +
+                '<td>' + (d.total || 0) + '</td>' +
+                '<td>' + (d.success || 0) + '</td>' +
+                '<td>' + (d.fail || 0) + '</td>' +
+                '<td>' + rateText + '</td>';
+            tbody.appendChild(tr);
+        });
+    }
+</script>
+{% endblock %}

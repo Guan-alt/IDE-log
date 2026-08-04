@@ -1,0 +1,32 @@
+# Tasks
+- [x] Task 1: 新增 `OtaEnvironment` 模型 + 迁移种子 + 注册蓝图
+  - [x] SubTask 1.1: `app/models/models.py` 新增 `OtaEnvironment` 模型（id/user_id/name/ota_url/token/sort_order/created_at/updated_at），`to_dict()` 返回全部字段；增加唯一约束 `UniqueConstraint(user_id, name)`
+  - [x] SubTask 1.2: `app/__init__.py` 引入 `OtaEnvironment`；在 admin 用户初始化后，对每个有 `Setting` 的用户检测：若该用户 `OtaEnvironment` 表为空，用 `Setting.ota_url`/`token` 种子"线下"环境（sort_order=0），`ota_url_online` 非空时种子"线上"环境（sort_order=1）
+  - [x] SubTask 1.3: `app/__init__.py` 引入并注册 `ota_envs_bp` 蓝图
+- [x] Task 2: 新建 `app/api/ota_envs.py` CRUD 接口
+  - [x] SubTask 2.1: `GET /api/ota-envs` 返回当前用户所有环境，按 sort_order 升序
+  - [x] SubTask 2.2: `POST /api/ota-envs` 新建环境（校验 name/ota_url/token 非空，校验同用户下 name 唯一）
+  - [x] SubTask 2.3: `PUT /api/ota-envs/<id>` 更新环境（同样校验 name 唯一性，排除自身）
+  - [x] SubTask 2.4: `DELETE /api/ota-envs/<id>` 删除环境（跨用户访问返回 404）
+- [x] Task 3: `app/api/ota.py` 改用 `env_id`
+  - [x] SubTask 3.1: `get_ota_client(env_id=None, user_id=None)` — 按 env_id 查 `OtaEnvironment`；未传或查不到时回退到该用户第一个环境；都没有时回退到 `Setting.ota_url`/`token`
+  - [x] SubTask 3.2: `start_ota` 从请求体读 `env_id` 替代 `ota_type`；写入 OtaRecord 不变（不存 env_id）
+  - [x] SubTask 3.3: `start_ota_cycle` 从请求体读 `env_id`；`cycling_tasks[user_id][sn]` 字典 `ota_type` 键改为 `env_id`
+  - [x] SubTask 3.4: `_start_ota_leg` 签名 `ota_type` 参数改为 `env_id`；`_continue_cycle` 内读取 `task.get('env_id')` 传入
+  - [x] SubTask 3.5（额外）: `get_progress` 函数中 `ota_type` 也改为 `env_id`
+- [x] Task 4: 设置页面 `app/templates/settings.html` 改造
+  - [x] SubTask 4.1: 移除 4 个硬编码 OTA URL/Token 输入框（保留超时/波特率/AI 配置区域）
+  - [x] SubTask 4.2: 新增"OTA 环境管理"卡片：列表显示每个环境的 name/URL脱敏/Token脱敏/编辑/删除按钮，顶部"新增环境"按钮
+  - [x] SubTask 4.3: 弹窗表单（名称/URL/Token/排序）支持新建和编辑模式
+  - [x] SubTask 4.4: JS 加载 `GET /api/ota-envs`，渲染列表；调用 POST/PUT/DELETE 接口
+- [x] Task 5: 监控页面 `app/templates/monitor.html` 改造
+  - [x] SubTask 5.1: 移除硬编码的 `<select id="otaEnvSelect"><option>线下/线上</option></select>`，改为加载时调用 `/api/ota-envs` 填充 option，按 sort_order 排序
+  - [x] SubTask 5.2: `localStorage` 持久化键从 `ota_env` 改为 `ota_env_id`，存储 env_id
+  - [x] SubTask 5.3: `submitSingleOta` / `submitCycleOta` 提交参数从 `ota_type` 改为 `env_id`
+- [x] Task 6: 验证 checklist
+
+# Task Dependencies
+- Task 2 依赖 Task 1（模型先建）
+- Task 3 依赖 Task 1（get_ota_client 用 OtaEnvironment）
+- Task 4 / Task 5 依赖 Task 2 / Task 3（接口和后端先就绪）
+- Task 6 依赖 Task 1-5 全部完成

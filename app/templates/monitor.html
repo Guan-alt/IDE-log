@@ -1,0 +1,1283 @@
+{% extends "base.html" %}
+
+{% block title %}实时监控 - OTA监控测试平台{% endblock %}
+
+{% block content %}
+<h1 class="page-title">实时监控</h1>
+
+<!-- OTA 升级 + 升级进度 -->
+<div class="monitor-top-row">
+    <div class="card">
+        <h2 class="card-title">OTA 升级</h2>
+        <!-- 模式切换 -->
+        <div style="display:flex; align-items:center; margin-bottom:16px;">
+            <div class="ota-mode-tabs" style="display:flex; gap:8px;">
+                <button class="ota-mode-btn active" data-mode="single" onclick="switchOtaMode('single')">单次OTA</button>
+                <button class="ota-mode-btn" data-mode="cycle" onclick="switchOtaMode('cycle')">循环OTA</button>
+            </div>
+            <div class="ota-env-tabs" style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+                <label style="color:#64748b; font-size:14px; margin:0;">OTA环境</label>
+                <select id="otaEnvSelect" class="form-control" style="width:auto; padding:4px 12px;" onchange="switchOtaEnv(this.value)">
+                    <option value="">加载中...</option>
+                </select>
+            </div>
+        </div>
+
+        <form id="otaForm">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="otaDeviceSelect">选择设备</label>
+                    <select id="otaDeviceSelect" class="form-control" required>
+                        <option value="">请选择设备</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="otaTaskSelect">当前任务（可选）</label>
+                    <select id="otaTaskSelect" class="form-control">
+                        <option value="">无任务</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- 单次OTA字段 -->
+            <div id="singleOtaFields">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="singleTargetVersion">目标版本</label>
+                        <select id="singleTargetVersion" class="form-control" required>
+                            <option value="">请先选择设备</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 循环OTA字段 -->
+            <div id="cycleOtaFields" style="display:none;">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="upgradeVersion">升级目标版本</label>
+                        <select id="upgradeVersion" class="form-control">
+                            <option value="">请选择版本</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="downgradeVersion">降级目标版本</label>
+                        <select id="downgradeVersion" class="form-control">
+                            <option value="">请选择版本</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:0 0 140px;">
+                        <label for="cycleCount">循环次数</label>
+                        <input type="number" id="cycleCount" class="form-control" value="100" min="1" max="99999">
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group" style="flex:0 0 auto;">
+                    <label>&nbsp;</label>
+                    <button type="submit" class="btn btn-primary" id="otaSubmitBtn">开始OTA</button>
+                    <button type="button" class="btn btn-danger" id="otaStopBtn" style="display:none;" onclick="stopOta()">停止OTA</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <div class="card">
+        <h2 class="card-title">升级进度</h2>
+        <div id="progressArea">
+            <div class="empty-text" id="noProgressTip">暂无升级任务，发起升级后将显示进度</div>
+            <div id="progressContent" style="display:none;">
+                <!-- 循环进度概览 -->
+                <div id="cycleOverview" style="margin-bottom:12px; padding:10px 14px; background:#f0f4ff; border-radius:8px; font-size:13px; color:#1e40af; display:none;"></div>
+                <div class="progress-wrapper">
+                    <div class="progress-label">
+                        <span>下载进度</span>
+                        <span class="progress-text" id="downloadPctText">0.0%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-bar" id="downloadBar"></div>
+                    </div>
+                </div>
+                <div class="progress-wrapper">
+                    <div class="progress-label">
+                        <span>升级进度</span>
+                        <span class="progress-text" id="upgradePctText">0.0%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-bar" id="upgradeBar"></div>
+                    </div>
+                </div>
+                <div class="mt-16" id="progressStatus" style="font-size:14px; color:#475569;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 日志采集配置 + 实时日志 -->
+<div class="monitor-bottom-row">
+    <!-- 左侧：日志采集控制 + 配置 -->
+    <div class="monitor-left-col">
+        <div class="card">
+            <h2 class="card-title">日志采集控制</h2>
+            <div class="action-group">
+                <button class="btn btn-success btn-sm" onclick="startSelectedCollect()">开始采集</button>
+                <button class="btn btn-danger btn-sm" onclick="stopSelectedCollect()">停止采集</button>
+                <button class="btn btn-primary btn-sm" onclick="openConfigModal()">添加配置</button>
+                <button class="btn btn-secondary btn-sm" onclick="loadLogConfigs()">刷新</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title">采集配置</h2>
+            <table class="table" id="logConfigTable">
+                <thead>
+                    <tr>
+                        <th style="width:36px;"><input type="checkbox" id="selectAllConfigs" onchange="toggleSelectAll(this)"></th>
+                        <th>类型</th>
+                        <th>名称</th>
+                        <th>配置详情</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="logConfigTableBody">
+                </tbody>
+            </table>
+            <div class="empty-text" id="logConfigEmptyTip" style="display:none;">暂无日志采集配置，点击"添加配置"创建</div>
+        </div>
+    </div>
+
+    <!-- 右侧：实时日志 -->
+    <div class="monitor-right-col">
+        <div class="card" style="height:100%; display:flex; flex-direction:column;">
+            <h2 class="card-title">实时日志</h2>
+            <div class="tabs-container" id="logTabs" data-tab-group="logTabs" style="flex:1; display:flex; flex-direction:column;">
+                <div class="tabs" id="logTabButtons"></div>
+                <div id="logContentArea" style="flex:1; display:flex; flex-direction:column;">
+                    <div class="empty-text">暂无日志，请添加采集配置并开始采集</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 配置编辑弹窗 -->
+<div id="configModal" class="modal" style="display:none;">
+    <div class="modal-content" style="max-width:640px;">
+        <div class="modal-header">
+            <span class="modal-title" id="configModalTitle">添加采集配置</span>
+            <button class="modal-close" onclick="closeConfigModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form id="logConfigForm">
+                <input type="hidden" id="editingConfigId" value="">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="logType">采集类型</label>
+                        <select id="logType" class="form-control" onchange="toggleLogTypeFields()">
+                            <option value="serial">串口</option>
+                            <option value="jlink">JLink</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="logConfigName">名称/备注</label>
+                        <input type="text" id="logConfigName" class="form-control" placeholder="如：主控">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="logConfigDevice">关联设备</label>
+                        <select id="logConfigDevice" class="form-control">
+                            <option value="">无关联设备</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:0 0 auto;">
+                        <label for="logConfigEnabled">启用</label>
+                        <label class="switch">
+                            <input type="checkbox" id="logConfigEnabled" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <div id="serialFields" class="form-row">
+                    <div class="form-group">
+                        <label for="serialPort">串口号</label>
+                        <select id="serialPort" class="form-control">
+                            <option value="">请选择串口</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="baudrate">波特率</label>
+                        <select id="baudrate" class="form-control">
+                            <option value="9600">9600</option>
+                            <option value="19200">19200</option>
+                            <option value="38400">38400</option>
+                            <option value="57600">57600</option>
+                            <option value="115200" selected>115200</option>
+                            <option value="230400">230400</option>
+                            <option value="460800">460800</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="jlinkFields" class="form-row" style="display:none; flex-wrap:wrap;">
+                    <div class="form-group">
+                        <label for="jlinkSerial">JLink序列号</label>
+                        <div style="display:flex; gap:8px;">
+                            <select id="jlinkSerial" class="form-control" style="flex:1;">
+                                <option value="">请选择JLink</option>
+                            </select>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="scanJLinks()">扫描</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="targetDevice">芯片型号</label>
+                        <select id="targetDevice" class="form-control">
+                            <option value="NRF52840_xxAA" selected>NRF52840_xxAA</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="jlinkInterface">调试接口</label>
+                        <select id="jlinkInterface" class="form-control">
+                            <option value="SWD" selected>SWD</option>
+                            <option value="JTAG">JTAG</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="jlinkSpeed">速率</label>
+                        <select id="jlinkSpeed" class="form-control">
+                            <option value="1000">1000 kHz</option>
+                            <option value="2000">2000 kHz</option>
+                            <option value="4000" selected>4000 kHz</option>
+                            <option value="8000">8000 kHz</option>
+                            <option value="12000">12000 kHz</option>
+                            <option value="20000">20000 kHz</option>
+                            <option value="30000">30000 kHz</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="rttChannel">RTT通道号</label>
+                        <input type="number" id="rttChannel" class="form-control" value="0" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label for="jlinkPath">JLink.exe路径</label>
+                        <input type="text" id="jlinkPath" class="form-control" placeholder="留空使用系统PATH">
+                    </div>
+                </div>
+                <div class="form-row" style="justify-content:flex-end;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="closeConfigModal()" style="margin-right:8px;">取消</button>
+                    <button type="submit" class="btn btn-primary btn-sm" id="configSaveBtn">保存</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- AI分析结果弹窗 -->
+<div id="aiAnalysisModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999;">
+    <div style="background:#fff; margin:5% auto; padding:24px; border-radius:8px; max-width:800px; width:90%; max-height:80vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h2 style="margin:0;">AI OTA失败分析报告</h2>
+            <button class="btn btn-secondary" onclick="document.getElementById('aiAnalysisModal').style.display='none'">关闭</button>
+        </div>
+        <div id="aiAnalysisContent" style="white-space:pre-wrap; font-size:14px; line-height:1.8; color:#333;"></div>
+    </div>
+</div>
+
+<!-- 测试采集弹窗 -->
+<div id="testLogModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9998;">
+    <div style="background:#fff; margin:5% auto; padding:24px; border-radius:8px; max-width:700px; width:90%; max-height:80vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h2 style="margin:0;">日志采集测试</h2>
+            <button class="btn btn-secondary" onclick="document.getElementById('testLogModal').style.display='none'">关闭</button>
+        </div>
+        <div id="testLogStatus" style="padding:10px; font-size:14px; color:#475569;">正在测试采集...</div>
+        <div id="testLogContent" style="background:#1e293b; color:#e2e8f0; padding:14px; border-radius:6px; font-family:monospace; font-size:13px; white-space:pre-wrap; max-height:400px; overflow-y:auto; margin-top:12px;"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+    .ota-env-tabs .ota-env-btn {
+        padding: 6px 16px; border: 1px solid #e2e8f0; background: #fff;
+        border-radius: 6px; cursor: pointer; font-size: 14px; color: #64748b;
+    }
+    .ota-env-tabs .ota-env-btn.active {
+        background: #6366f1; color: #fff; border-color: #6366f1;
+    }
+</style>
+<script>
+    /* ===== 实时监控页面逻辑 ===== */
+
+    var progressTimer = null;
+    var logTimer = null;
+    var currentLogConfigs = [];
+    var currentOtaSn = null;
+    var currentOtaMode = 'single';  // 'single' | 'cycle'
+
+    // 页面加载初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        restoreOtaMode();
+        loadOtaEnvs();
+        loadSerialPorts();
+        loadChips();
+        scanJLinks();
+        loadLogConfigs();
+        startLogPolling();
+        loadOtaTasks();
+        // 先加载设备列表，完成后恢复OTA状态
+        loadDevicesForOta().then(function() {
+            loadDevicesForConfig();
+            restoreOtaState();
+        });
+    });
+
+    /* ===== 测试任务下拉 ===== */
+    function loadOtaTasks() {
+        return apiGet('/api/tasks?status=' + encodeURIComponent('进行中')).then(function(data) {
+            var tasks = data.tasks || [];
+            var select = document.getElementById('otaTaskSelect');
+            select.innerHTML = '<option value="">无任务</option>';
+            tasks.forEach(function(t) {
+                var opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.name + (t.record_count ? (' (' + t.record_count + ')') : '');
+                select.appendChild(opt);
+            });
+            // 恢复上次选中的任务
+            var saved = localStorage.getItem('ota_task_id');
+            if (saved) {
+                for (var i = 0; i < select.options.length; i++) {
+                    if (select.options[i].value === saved) {
+                        select.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+        }).catch(function() {});
+    }
+
+    document.getElementById('otaTaskSelect').addEventListener('change', function() {
+        if (this.value) localStorage.setItem('ota_task_id', this.value);
+        else localStorage.removeItem('ota_task_id');
+    });
+
+    /* ===== OTA 模式切换 ===== */
+
+    function switchOtaMode(mode) {
+        currentOtaMode = mode;
+        localStorage.setItem('ota_mode', mode);
+
+        // 更新按钮激活状态
+        document.querySelectorAll('.ota-mode-btn').forEach(function(btn) {
+            btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
+        });
+
+        // 切换字段显示
+        document.getElementById('singleOtaFields').style.display = mode === 'single' ? 'block' : 'none';
+        document.getElementById('cycleOtaFields').style.display = mode === 'cycle' ? 'block' : 'none';
+
+        // 更新required属性
+        document.getElementById('singleTargetVersion').required = mode === 'single';
+        document.getElementById('upgradeVersion').required = mode === 'cycle';
+        document.getElementById('downgradeVersion').required = mode === 'cycle';
+        document.getElementById('cycleCount').required = mode === 'cycle';
+
+        // 恢复持久化版本选择
+        if (mode === 'single') {
+            var ver = localStorage.getItem('ota_single_ver');
+            if (ver) document.getElementById('singleTargetVersion').value = ver;
+        } else {
+            var upVer = localStorage.getItem('ota_upgrade_ver');
+            var downVer = localStorage.getItem('ota_downgrade_ver');
+            var cc = localStorage.getItem('ota_cycle_count');
+            if (upVer) document.getElementById('upgradeVersion').value = upVer;
+            if (downVer) document.getElementById('downgradeVersion').value = downVer;
+            if (cc) document.getElementById('cycleCount').value = cc;
+        }
+    }
+
+    function restoreOtaMode() {
+        var savedMode = localStorage.getItem('ota_mode') || 'single';
+        switchOtaMode(savedMode);
+    }
+
+    /* ===== OTA 环境切换 ===== */
+
+    function switchOtaEnv(val) {
+        if (val) localStorage.setItem('ota_env_id', val);
+        else localStorage.removeItem('ota_env_id');
+    }
+
+    function restoreOtaEnv() {
+        var saved = localStorage.getItem('ota_env_id');
+        var select = document.getElementById('otaEnvSelect');
+        if (saved && select) {
+            for (var i = 0; i < select.options.length; i++) {
+                if (select.options[i].value === saved) {
+                    select.selectedIndex = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    function loadOtaEnvs() {
+        return apiGet('/api/ota-envs').then(function(data) {
+            var envs = (data && data.envs) || [];
+            var select = document.getElementById('otaEnvSelect');
+            if (!select) return;
+            if (envs.length === 0) {
+                select.innerHTML = '<option value="">（请先在设置页配置）</option>';
+                return;
+            }
+            select.innerHTML = '';
+            envs.forEach(function(env) {
+                var opt = document.createElement('option');
+                opt.value = env.id;
+                opt.textContent = env.name;
+                select.appendChild(opt);
+            });
+            restoreOtaEnv();
+        }).catch(function() {});
+    }
+
+    /* ===== OTA 升级部分 ===== */
+
+    function loadDevicesForOta() {
+        return apiGet('/api/devices').then(function(data) {
+            var list = data.devices || data || [];
+            var select = document.getElementById('otaDeviceSelect');
+            select.innerHTML = '<option value="">请选择设备</option>';
+            list.forEach(function(device) {
+                var sn = device.sn || device.serial_number || '';
+                var name = device.name || device.device_name || '';
+                var option = document.createElement('option');
+                option.value = sn;
+                option.textContent = name ? (name + ' (' + sn + ')') : sn;
+                select.appendChild(option);
+            });
+        }).catch(function(err) {
+            showToast('获取设备列表失败: ' + err.message, 'error');
+        });
+    }
+
+    document.getElementById('otaDeviceSelect').addEventListener('change', function() {
+        var sn = this.value;
+        // 同时填充单次和循环模式的版本下拉
+        var singleVerSelect = document.getElementById('singleTargetVersion');
+        var upVerSelect = document.getElementById('upgradeVersion');
+        var downVerSelect = document.getElementById('downgradeVersion');
+        singleVerSelect.innerHTML = '<option value="">加载中...</option>';
+        upVerSelect.innerHTML = '<option value="">加载中...</option>';
+        downVerSelect.innerHTML = '<option value="">加载中...</option>';
+        if (!sn) {
+            singleVerSelect.innerHTML = '<option value="">请选择版本</option>';
+            upVerSelect.innerHTML = '<option value="">请选择版本</option>';
+            downVerSelect.innerHTML = '<option value="">请选择版本</option>';
+            return;
+        }
+        apiGet('/api/ota/versions/' + sn).then(function(data) {
+            var versions = (data.success && data.versions) ? data.versions : [];
+            [singleVerSelect, upVerSelect, downVerSelect].forEach(function(sel) {
+                sel.innerHTML = '<option value="">请选择版本</option>';
+                versions.forEach(function(v) {
+                    var opt = document.createElement('option');
+                    opt.value = v.version;
+                    opt.textContent = v.version + (v.description ? (' - ' + v.description) : '');
+                    sel.appendChild(opt);
+                });
+            });
+            // 恢复持久化版本选择
+            restoreSavedVersions();
+        }).catch(function() {
+            [singleVerSelect, upVerSelect, downVerSelect].forEach(function(sel) {
+                sel.innerHTML = '<option value="">加载失败</option>';
+            });
+        });
+    });
+
+    function restoreSavedVersions() {
+        var mode = localStorage.getItem('ota_mode') || 'single';
+        setTimeout(function() {
+            if (mode === 'single') {
+                var ver = localStorage.getItem('ota_single_ver');
+                if (ver) document.getElementById('singleTargetVersion').value = ver;
+            } else {
+                var upVer = localStorage.getItem('ota_upgrade_ver');
+                var downVer = localStorage.getItem('ota_downgrade_ver');
+                if (upVer) document.getElementById('upgradeVersion').value = upVer;
+                if (downVer) document.getElementById('downgradeVersion').value = downVer;
+            }
+        }, 300);
+    }
+
+    // 版本选择器变化时持久化
+    document.getElementById('singleTargetVersion').addEventListener('change', function() {
+        if (this.value) localStorage.setItem('ota_single_ver', this.value);
+    });
+    document.getElementById('upgradeVersion').addEventListener('change', function() {
+        if (this.value) localStorage.setItem('ota_upgrade_ver', this.value);
+    });
+    document.getElementById('downgradeVersion').addEventListener('change', function() {
+        if (this.value) localStorage.setItem('ota_downgrade_ver', this.value);
+    });
+    document.getElementById('cycleCount').addEventListener('change', function() {
+        if (this.value) localStorage.setItem('ota_cycle_count', this.value);
+    });
+
+    // OTA表单提交
+    document.getElementById('otaForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var sn = document.getElementById('otaDeviceSelect').value;
+        if (!sn) { showToast('请选择设备', 'error'); return; }
+
+        // 持久化设备SN
+        localStorage.setItem('ota_sn', sn);
+
+        if (currentOtaMode === 'single') {
+            submitSingleOta(sn);
+        } else {
+            submitCycleOta(sn);
+        }
+    });
+
+    function submitSingleOta(sn) {
+        var targetVer = document.getElementById('singleTargetVersion').value;
+        if (!targetVer) { showToast('请选择目标版本', 'error'); return; }
+        localStorage.setItem('ota_single_ver', targetVer);
+        var taskId = document.getElementById('otaTaskSelect').value || null;
+        var envId = parseInt(document.getElementById('otaEnvSelect').value) || null;
+
+        // 开始OTA前自动启动日志采集
+        autoStartLogCollection(function() {
+            apiPost('/api/ota/start', { sn: sn, target_version: targetVer, env_id: envId, task_id: taskId }).then(function(data) {
+                if (data.success && data.message && data.message.indexOf('已是') >= 0) {
+                    // 设备已是目标版本，无需升级
+                    showToast(data.message, 'info');
+                } else if (data.success) {
+                    showToast('单次OTA已启动', 'success');
+                    localStorage.setItem('ota_active', '1');
+                    localStorage.removeItem('ota_cycle_active');
+                    currentOtaSn = sn;
+                    enterRunningUI();
+                    startProgressPolling(sn);
+                } else {
+                    showToast('OTA请求失败: ' + (data.message || '未知错误'), 'error');
+                }
+            }).catch(function(err) { showToast('发起OTA失败: ' + err.message, 'error'); });
+        });
+    }
+
+    function submitCycleOta(sn) {
+        var upgradeVer = document.getElementById('upgradeVersion').value;
+        var downgradeVer = document.getElementById('downgradeVersion').value;
+        var cycleCount = parseInt(document.getElementById('cycleCount').value);
+        if (!upgradeVer || !downgradeVer) { showToast('请选择升级和降级目标版本', 'error'); return; }
+        if (!cycleCount || cycleCount < 1) { showToast('循环次数至少为1', 'error'); return; }
+        localStorage.setItem('ota_upgrade_ver', upgradeVer);
+        localStorage.setItem('ota_downgrade_ver', downgradeVer);
+        localStorage.setItem('ota_cycle_count', cycleCount);
+        var taskId = document.getElementById('otaTaskSelect').value || null;
+        var envId = parseInt(document.getElementById('otaEnvSelect').value) || null;
+
+        autoStartLogCollection(function() {
+            apiPost('/api/ota/start-cycle', {
+                sn: sn,
+                upgrade_version: upgradeVer,
+                downgrade_version: downgradeVer,
+                cycle_count: cycleCount,
+                env_id: envId,
+                task_id: taskId
+            }).then(function(data) {
+                if (data.success) {
+                    showToast('循环OTA已启动: 共' + cycleCount + '轮', 'success');
+                    localStorage.setItem('ota_cycle_active', '1');
+                    localStorage.removeItem('ota_active');
+                    currentOtaSn = sn;
+                    enterRunningUI();
+                    startProgressPolling(sn);
+                    startCycleStatusPolling(sn);
+                } else {
+                    showToast('OTA请求失败: ' + (data.message || '未知错误'), 'error');
+                }
+            }).catch(function(err) { showToast('发起OTA失败: ' + err.message, 'error'); });
+        });
+    }
+
+    function autoStartLogCollection(callback) {
+        // 获取所有勾选的采集配置ID并启动
+        var ids = getSelectedConfigIds();
+        if (ids.length === 0) {
+            // 没有配置，直接继续
+            callback();
+            return;
+        }
+        apiPost('/api/serial/start', { config_ids: ids }).then(function(data) {
+            if (data.results) {
+                var started = data.results.filter(function(r) { return r.success; }).length;
+                showToast('已自动启动 ' + started + '/' + data.results.length + ' 个日志采集', 'info');
+            }
+            callback();
+        }).catch(function() {
+            callback();
+        });
+    }
+
+    function enterRunningUI() {
+        document.getElementById('noProgressTip').style.display = 'none';
+        document.getElementById('progressContent').style.display = 'block';
+        document.getElementById('otaSubmitBtn').style.display = 'none';
+        document.getElementById('otaStopBtn').style.display = 'inline-block';
+        if (currentOtaMode === 'cycle') {
+            document.getElementById('cycleOverview').style.display = 'block';
+        } else {
+            document.getElementById('cycleOverview').style.display = 'none';
+        }
+    }
+
+    // 恢复OTA状态（页面跳转回来后）
+    function restoreOtaState() {
+        var savedSn = localStorage.getItem('ota_sn');
+        if (!savedSn) return;
+
+        var isCycleActive = localStorage.getItem('ota_cycle_active') === '1';
+        var isSingleActive = localStorage.getItem('ota_active') === '1';
+        if (!isCycleActive && !isSingleActive) return;
+
+        // 尝试恢复设备选择（最多重试3次）
+        var select = document.getElementById('otaDeviceSelect');
+        var attempt = 0;
+        function tryRestoreDevice() {
+            attempt++;
+            for (var i = 0; i < select.options.length; i++) {
+                if (select.options[i].value === savedSn) {
+                    select.selectedIndex = i;
+                    select.dispatchEvent(new Event('change'));
+                    return true;
+                }
+            }
+            if (attempt < 3) {
+                setTimeout(tryRestoreDevice, 800);
+            }
+            return false;
+        }
+
+        if (!tryRestoreDevice()) {
+            // 设备列表未加载，等一会再试
+            setTimeout(function() {
+                if (tryRestoreDevice()) {
+                    doRestoreOtaProgress(savedSn, isCycleActive);
+                }
+            }, 2500);
+        } else {
+            doRestoreOtaProgress(savedSn, isCycleActive);
+        }
+    }
+
+    function doRestoreOtaProgress(savedSn, isCycleActive) {
+        if (isCycleActive) {
+            switchOtaMode('cycle');
+            apiGet('/api/ota/cycle-status/' + savedSn).then(function(data) {
+                if (data.active && data.state === 'running') {
+                    currentOtaSn = savedSn;
+                    enterRunningUI();
+                    document.getElementById('cycleOverview').style.display = 'block';
+                    startProgressPolling(savedSn);
+                    startCycleStatusPolling(savedSn);
+                } else if (data.active && data.state === 'done') {
+                    showCycleDoneState(data);
+                } else if (data.active && data.state === 'failed') {
+                    showCycleFailedState(data);
+                } else {
+                    // 状态异常，清除本地标记
+                    localStorage.removeItem('ota_cycle_active');
+                }
+            }).catch(function() {
+                // API 失败，仍尝试恢复进度轮询
+                currentOtaSn = savedSn;
+                enterRunningUI();
+                document.getElementById('cycleOverview').style.display = 'block';
+                startProgressPolling(savedSn);
+                startCycleStatusPolling(savedSn);
+            });
+        } else {
+            switchOtaMode('single');
+            currentOtaSn = savedSn;
+            enterRunningUI();
+            document.getElementById('cycleOverview').style.display = 'none';
+            document.getElementById('progressStatus').textContent = '正在恢复升级状态...';
+            fetchProgress(savedSn);  // 立即获取一次进度
+            startProgressPolling(savedSn);
+        }
+    }
+
+    function showCycleDoneState(data) {
+        document.getElementById('noProgressTip').style.display = 'none';
+        document.getElementById('progressContent').style.display = 'block';
+        document.getElementById('cycleOverview').style.display = 'block';
+        document.getElementById('cycleOverview').innerHTML = '循环压测完成: 共 ' + data.total_cycles + ' 轮 &nbsp; | &nbsp; 成功 ' + (data.success_count || 0) + ' 次 / 失败 ' + (data.fail_count || 0) + ' 次';
+        document.getElementById('cycleOverview').style.background = '#dcfce7';
+        document.getElementById('cycleOverview').style.color = '#15803d';
+        updateProgress('upgradeBar', 100, 'success');
+        updateProgress('downloadBar', 100, 'success');
+        document.getElementById('progressStatus').textContent = '循环压测全部完成';
+        // 检查是否有AI分析结果
+        checkCycleAiAnalysis(data);
+        cleanupOtaUI();
+    }
+
+    function showCycleFailedState(data) {
+        document.getElementById('noProgressTip').style.display = 'none';
+        document.getElementById('progressContent').style.display = 'block';
+        document.getElementById('cycleOverview').style.display = 'block';
+        document.getElementById('cycleOverview').innerHTML = '循环压测中断: 第 ' + data.current_cycle + ' 轮失败';
+        document.getElementById('cycleOverview').style.background = '#fee2e2';
+        document.getElementById('cycleOverview').style.color = '#b91c1c';
+        checkCycleAiAnalysis(data);
+        cleanupOtaUI();
+    }
+
+    function checkCycleAiAnalysis(data) {
+        if (!data.records || data.records.length === 0) return;
+        // 检查最后几条记录是否有AI分析结果
+        var lastRecords = data.records.slice(-3);
+        var checkPromises = lastRecords.map(function(rid) {
+            return apiGet('/api/records/' + rid).then(function(rec) {
+                return rec.ai_analysis;
+            }).catch(function() { return null; });
+        });
+        // 简化：延迟3秒后查询AI分析（后台异步生成）
+        setTimeout(function() {
+            apiGet('/api/ota/progress/' + currentOtaSn).then(function(progData) {
+                if (progData.ai_analysis) {
+                    showAIAnalysis(progData.ai_analysis);
+                }
+            }).catch(function() {});
+        }, 3000);
+    }
+
+    function startProgressPolling(sn) {
+        if (progressTimer) clearInterval(progressTimer);
+        fetchProgress(sn);
+        progressTimer = setInterval(function() { fetchProgress(sn); }, 5000);
+    }
+
+    var cycleStatusTimer = null;
+
+    function startCycleStatusPolling(sn) {
+        if (cycleStatusTimer) clearInterval(cycleStatusTimer);
+        fetchCycleStatus(sn);
+        cycleStatusTimer = setInterval(function() { fetchCycleStatus(sn); }, 5000);
+    }
+
+    function fetchCycleStatus(sn) {
+        apiGet('/api/ota/cycle-status/' + sn).then(function(data) {
+            if (!data.active) return;
+
+            var overview = document.getElementById('cycleOverview');
+            var direction = data.current_direction === 'upgrade' ? '升级' : '降级';
+            var directionColor = data.current_direction === 'upgrade' ? '#2563eb' : '#d97706';
+            var targetVer = data.current_direction === 'upgrade' ? data.upgrade_version : data.downgrade_version;
+            overview.innerHTML = '循环压测 &nbsp; 第 <strong>' + data.current_cycle + '</strong> / ' + data.total_cycles + ' 轮 &nbsp; | &nbsp; <span style="color:' + directionColor + ';font-weight:600;">' + direction + ' → ' + targetVer + '</span> &nbsp; | &nbsp; 已产生 ' + (data.records ? data.records.length : 0) + ' 条记录';
+            overview.style.display = 'block';
+
+            if (data.state === 'done') {
+                showCycleDoneState(data);
+                if (cycleStatusTimer) { clearInterval(cycleStatusTimer); cycleStatusTimer = null; }
+            } else if (data.state === 'failed') {
+                showCycleFailedState(data);
+                if (cycleStatusTimer) { clearInterval(cycleStatusTimer); cycleStatusTimer = null; }
+            }
+        }).catch(function() {});
+    }
+
+    function fetchProgress(sn) {
+        var envId = parseInt(document.getElementById('otaEnvSelect').value) || null;
+        apiGet('/api/ota/progress/' + sn + (envId ? '?env_id=' + envId : '')).then(function(data) {
+            var downloadPct = data.download_percent || 0;
+            var upgradePct = data.upgrade_percent || 0;
+            var state = data.upgrade_state || '';
+            var errno = data.upgrade_errno || 0;
+            var isFinished = data.is_finished || false;
+
+            updateProgress('downloadBar', downloadPct);
+            updateProgress('upgradeBar', upgradePct);
+            document.getElementById('downloadPctText').textContent = downloadPct.toFixed(1) + '%';
+            document.getElementById('upgradePctText').textContent = upgradePct.toFixed(1) + '%';
+
+            var SUCCESS_STATES = ['success', 'burn_done', 'done', 'finish', 'finished'];
+            var FAIL_STATES = ['burn_fail', 'down_fail', 'fail', 'failed', 'error', 'timeout'];
+            var isTimeout = data.is_timeout || false;
+            var stateText = '';
+            if (isTimeout) { stateText = 'OTA超时'; }
+            else if (state === 'burn_done' && upgradePct < 100) { stateText = '烧录完成，等待中'; }
+            else if (SUCCESS_STATES.indexOf(state) >= 0) { stateText = '成功'; }
+            else if (state === 'burn_fail') { stateText = '烧录失败(err=' + errno + ')'; }
+            else if (state === 'down_fail') { stateText = '下载失败(err=' + errno + ')'; }
+            else if (state === 'downloading') { stateText = '下载中'; }
+            else if (state === 'burning') { stateText = '烧录中'; }
+            else if (state === 'waiting') { stateText = '等待中'; }
+            else if (state) { stateText = state; }
+            else if (upgradePct >= 100) { stateText = '完成'; }
+            else { stateText = '进行中...'; }
+
+            var statusText = '设备: ' + (data.device_name || sn) + ' | 当前版本: ' + (data.current_version || '-') + ' → 目标: ' + (data.target_version || '-') + ' | 状态: ' + stateText;
+            document.getElementById('progressStatus').textContent = statusText;
+
+            if (isFinished) {
+                if (!isTimeout && SUCCESS_STATES.indexOf(state) >= 0 && !(state === 'burn_done' && upgradePct < 100)) {
+                    updateProgress('upgradeBar', 100, 'success');
+                    updateProgress('downloadBar', 100, 'success');
+                } else {
+                    updateProgress('upgradeBar', upgradePct, 'fail');
+                    showToast(stateText, 'error');
+                    if (data.ai_analysis) {
+                        showAIAnalysis(data.ai_analysis);
+                    }
+                }
+                // 单次模式完成
+                if (!localStorage.getItem('ota_cycle_active') && localStorage.getItem('ota_active')) {
+                    localStorage.removeItem('ota_active');
+                    clearInterval(progressTimer); progressTimer = null;
+                    cleanupOtaUI();
+                }
+            }
+        }).catch(function() {});
+    }
+
+    function stopOta() {
+        if (!currentOtaSn) return;
+        if (currentOtaMode === 'cycle') {
+            if (!confirm('确定要停止循环OTA压测吗？当前进行中的升级/降级将继续执行完毕。')) return;
+            apiPost('/api/ota/stop-cycle', { sn: currentOtaSn }).then(function(data) {
+                showToast(data.message || '已停止循环', 'success');
+                cleanupOtaUI();
+            }).catch(function(err) { showToast('停止失败: ' + err.message, 'error'); });
+        } else {
+            // 单次OTA无法中途停止，但可以清理UI
+            showToast('单次OTA无法中途停止，等待完成', 'info');
+        }
+    }
+
+    function cleanupOtaUI() {
+        document.getElementById('otaSubmitBtn').style.display = 'inline-block';
+        document.getElementById('otaStopBtn').style.display = 'none';
+        if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+        if (cycleStatusTimer) { clearInterval(cycleStatusTimer); cycleStatusTimer = null; }
+        localStorage.removeItem('ota_cycle_active');
+        localStorage.removeItem('ota_active');
+    }
+
+    function showAIAnalysis(analysisText) {
+        var modal = document.getElementById('aiAnalysisModal');
+        var content = document.getElementById('aiAnalysisContent');
+        content.textContent = analysisText;
+        modal.style.display = 'block';
+    }
+
+    /* ===== 日志采集配置管理 ===== */
+
+    function toggleLogTypeFields() {
+        var logType = document.getElementById('logType').value;
+        document.getElementById('serialFields').style.display = logType === 'serial' ? 'flex' : 'none';
+        document.getElementById('jlinkFields').style.display = logType === 'jlink' ? 'flex' : 'none';
+    }
+
+    function loadSerialPorts() {
+        return apiGet('/api/serial/ports').then(function(data) {
+            var ports = data.ports || data || [];
+            var select = document.getElementById('serialPort');
+            select.innerHTML = '<option value="">请选择串口</option>';
+            ports.forEach(function(port) {
+                var portName = typeof port === 'string' ? port : (port.port || port.device || port.name || '');
+                if (portName) {
+                    var option = document.createElement('option');
+                    option.value = portName;
+                    option.textContent = portName;
+                    select.appendChild(option);
+                }
+            });
+        });
+    }
+
+    function scanJLinks() {
+        return apiGet('/api/serial/jlinks').then(function(data) {
+            var select = document.getElementById('jlinkSerial');
+            if (data.error) {
+                select.innerHTML = '<option value="">' + data.error + '</option>';
+                return;
+            }
+            var jlinks = data || [];
+            select.innerHTML = '<option value="">请选择JLink</option>';
+            if (jlinks.length === 0) {
+                select.innerHTML = '<option value="">未检测到JLink设备</option>';
+                return;
+            }
+            jlinks.forEach(function(item) {
+                var option = document.createElement('option');
+                option.value = item.serial || '';
+                option.textContent = item.label || ('SN: ' + item.serial);
+                select.appendChild(option);
+            });
+        }).catch(function() {
+            var select = document.getElementById('jlinkSerial');
+            select.innerHTML = '<option value="">扫描失败，请确认JLink已安装</option>';
+        });
+    }
+
+    document.getElementById('jlinkSerial').addEventListener('change', function() {
+        var sn = this.value;
+        if (!sn) return;
+        var chipSelect = document.getElementById('targetDevice');
+        chipSelect.innerHTML = '<option value="">检测中...</option>';
+        apiGet('/api/serial/detect_chip/' + sn).then(function(data) {
+            if (data.success && data.chip) {
+                loadChips().then(function() {
+                    var matched = false;
+                    for (var i = 0; i < chipSelect.options.length; i++) {
+                        if (chipSelect.options[i].value === data.chip) {
+                            chipSelect.selectedIndex = i;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched) {
+                        var opt = document.createElement('option');
+                        opt.value = data.chip;
+                        opt.textContent = data.chip + ' (自动检测)';
+                        chipSelect.appendChild(opt);
+                        chipSelect.value = data.chip;
+                    }
+                    showToast('已检测到芯片: ' + data.chip, 'success');
+                });
+            } else {
+                loadChips();
+                showToast(data.error || '未能检测到芯片型号', 'info');
+            }
+        }).catch(function() {
+            loadChips();
+            showToast('芯片检测失败', 'error');
+        });
+    });
+
+    function loadChips() {
+        return apiGet('/api/serial/chips').then(function(data) {
+            var chips = data || [];
+            var select = document.getElementById('targetDevice');
+            select.innerHTML = '';
+            chips.forEach(function(chip) {
+                var option = document.createElement('option');
+                option.value = chip;
+                option.textContent = chip;
+                if (chip === 'NRF52840_xxAA') option.selected = true;
+                select.appendChild(option);
+            });
+        });
+    }
+
+    function loadDevicesForConfig() {
+        return apiGet('/api/devices').then(function(data) {
+            var list = data.devices || data || [];
+            var select = document.getElementById('logConfigDevice');
+            select.innerHTML = '<option value="">无关联设备</option>';
+            list.forEach(function(device) {
+                var sn = device.sn || device.serial_number || '';
+                var name = device.name || device.device_name || '';
+                var option = document.createElement('option');
+                option.value = sn;
+                option.textContent = name ? (name + ' (' + sn + ')') : sn;
+                select.appendChild(option);
+            });
+        });
+    }
+
+    function loadLogConfigs() {
+        apiGet('/api/serial/configs').then(function(data) {
+            var list = data.configs || data || [];
+            currentLogConfigs = list;
+            renderLogConfigs(list);
+            renderLogTabs(list);
+        }).catch(function(err) { showToast('获取配置失败: ' + err.message, 'error'); });
+    }
+
+    function renderLogConfigs(configs) {
+        var tbody = document.getElementById('logConfigTableBody');
+        var emptyTip = document.getElementById('logConfigEmptyTip');
+        var table = document.getElementById('logConfigTable');
+        tbody.innerHTML = '';
+
+        if (!configs || configs.length === 0) {
+            table.style.display = 'none'; emptyTip.style.display = 'block'; return;
+        }
+        table.style.display = 'table'; emptyTip.style.display = 'none';
+
+        configs.forEach(function(cfg) {
+            var id = cfg.id;
+            var logType = cfg.log_type || 'serial';
+            var name = cfg.name || '-';
+            var enabled = cfg.enabled !== undefined ? cfg.enabled : false;
+
+            var detail = '-';
+            if (logType === 'serial') {
+                detail = '串口: ' + (cfg.port || '-') + ' | 波特率: ' + (cfg.baudrate || '-');
+            } else if (logType === 'jlink') {
+                detail = 'SN: ' + (cfg.jlink_serial || '-') +
+                    ' | 芯片: ' + (cfg.target_device || '-') +
+                    ' | 接口: ' + (cfg.interface || 'SWD') +
+                    ' | 速率: ' + (cfg.speed || 4000) + 'kHz' +
+                    ' | RTT通道: ' + (cfg.rtt_channel !== undefined ? cfg.rtt_channel : 0);
+            }
+
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td><input type="checkbox" class="config-checkbox" value="' + id + '" checked></td>' +
+                '<td><span class="tag ' + (logType === 'serial' ? 'tag-info' : 'tag-success') + '">' + (logType === 'serial' ? '串口' : 'JLink') + '</span></td>' +
+                '<td>' + escapeHtml(name) + (enabled ? '' : ' <span class="tag tag-warning" style="font-size:11px;">禁</span>') + '</td>' +
+                '<td style="font-size:13px;">' + escapeHtml(detail) + '</td>' +
+                '<td><div class="action-group" style="flex-wrap:nowrap;">' +
+                    '<button class="btn btn-primary btn-sm" onclick="editLogConfig(' + id + ')">编辑</button>' +
+                    '<button class="btn btn-info btn-sm" onclick="testLogConfig(' + id + ')">测试</button>' +
+                    '<button class="btn btn-danger btn-sm" onclick="deleteLogConfig(' + id + ')">删除</button>' +
+                '</div></td>';
+            tbody.appendChild(tr);
+        });
+
+        var selectAll = document.getElementById('selectAllConfigs');
+        if (selectAll && configs.length > 0) {
+            selectAll.checked = true;
+        }
+    }
+
+    function getSelectedConfigIds() {
+        var checkboxes = document.querySelectorAll('.config-checkbox:checked');
+        var ids = [];
+        checkboxes.forEach(function(cb) { ids.push(parseInt(cb.value)); });
+        return ids;
+    }
+
+    function toggleSelectAll(checkbox) {
+        document.querySelectorAll('.config-checkbox').forEach(function(cb) {
+            cb.checked = checkbox.checked;
+        });
+    }
+
+    function openConfigModal() {
+        document.getElementById('configModalTitle').textContent = '添加采集配置';
+        document.getElementById('editingConfigId').value = '';
+        document.getElementById('logConfigForm').reset();
+        document.getElementById('logType').value = 'serial';
+        document.getElementById('logConfigEnabled').checked = true;
+        toggleLogTypeFields();
+        loadSerialPorts();
+        scanJLinks();
+        loadDevicesForConfig();
+        loadChips();
+        document.getElementById('configModal').classList.add('show');
+        document.getElementById('configModal').style.display = 'flex';
+    }
+
+    function closeConfigModal() {
+        document.getElementById('configModal').classList.remove('show');
+        document.getElementById('configModal').style.display = 'none';
+    }
+
+    function editLogConfig(id) {
+        var cfg = currentLogConfigs.find(function(c) { return c.id === id; });
+        if (!cfg) return;
+
+        document.getElementById('configModalTitle').textContent = '编辑采集配置';
+        document.getElementById('editingConfigId').value = id;
+        document.getElementById('logType').value = cfg.log_type || 'serial';
+        document.getElementById('logConfigName').value = cfg.name || '';
+        document.getElementById('logConfigDevice').value = cfg.device_sn || '';
+        document.getElementById('logConfigEnabled').checked = cfg.enabled !== false;
+
+        loadSerialPorts().then(function() {
+            if (cfg.port) document.getElementById('serialPort').value = cfg.port;
+        });
+        scanJLinks().then(function() {
+            if (cfg.jlink_serial) document.getElementById('jlinkSerial').value = cfg.jlink_serial;
+        });
+        loadDevicesForConfig().then(function() {
+            if (cfg.device_sn) document.getElementById('logConfigDevice').value = cfg.device_sn;
+        });
+        loadChips().then(function() {
+            if (cfg.target_device) document.getElementById('targetDevice').value = cfg.target_device;
+        });
+
+        if (cfg.target_device) document.getElementById('targetDevice').value = cfg.target_device;
+        if (cfg.interface) document.getElementById('jlinkInterface').value = cfg.interface;
+        if (cfg.speed) document.getElementById('jlinkSpeed').value = cfg.speed;
+        if (cfg.rtt_channel !== undefined) document.getElementById('rttChannel').value = cfg.rtt_channel;
+        if (cfg.jlink_path) document.getElementById('jlinkPath').value = cfg.jlink_path;
+        if (cfg.baudrate) document.getElementById('baudrate').value = cfg.baudrate;
+
+        toggleLogTypeFields();
+        document.getElementById('configModal').classList.add('show');
+        document.getElementById('configModal').style.display = 'flex';
+    }
+
+    document.getElementById('logConfigForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var editId = document.getElementById('editingConfigId').value;
+        var logType = document.getElementById('logType').value;
+        var payload = {
+            log_type: logType,
+            name: document.getElementById('logConfigName').value.trim(),
+            device_sn: document.getElementById('logConfigDevice').value,
+            enabled: document.getElementById('logConfigEnabled').checked
+        };
+
+        if (logType === 'serial') {
+            payload.port = document.getElementById('serialPort').value;
+            payload.baudrate = parseInt(document.getElementById('baudrate').value);
+            if (!payload.port) { showToast('请选择串口', 'error'); return; }
+        } else if (logType === 'jlink') {
+            payload.jlink_serial = document.getElementById('jlinkSerial').value;
+            payload.target_device = document.getElementById('targetDevice').value;
+            payload.interface = document.getElementById('jlinkInterface').value;
+            payload.speed = parseInt(document.getElementById('jlinkSpeed').value);
+            payload.rtt_channel = parseInt(document.getElementById('rttChannel').value) || 0;
+            payload.jlink_path = document.getElementById('jlinkPath').value.trim();
+            if (!payload.jlink_serial) { showToast('请选择或扫描JLink序列号', 'error'); return; }
+        }
+
+        if (editId) {
+            apiPut('/api/serial/configs/' + editId, payload).then(function() {
+                showToast('配置更新成功', 'success');
+                closeConfigModal();
+                loadLogConfigs();
+            }).catch(function(err) { showToast('更新配置失败: ' + err.message, 'error'); });
+        } else {
+            apiPost('/api/serial/configs', payload).then(function() {
+                showToast(logType === 'serial' ? '串口配置添加成功' : 'JLink配置添加成功', 'success');
+                closeConfigModal();
+                loadLogConfigs();
+            }).catch(function(err) { showToast('添加配置失败: ' + err.message, 'error'); });
+        }
+    });
+
+    function deleteLogConfig(id) {
+        if (!confirm('确定要删除该配置吗？')) return;
+        apiDelete('/api/serial/configs/' + id).then(function() {
+            showToast('配置已删除', 'success');
+            loadLogConfigs();
+        }).catch(function(err) { showToast('删除失败: ' + err.message, 'error'); });
+    }
+
+    /* ===== 日志采集测试 ===== */
+
+    function testLogConfig(id) {
+        document.getElementById('testLogModal').style.display = 'block';
+        document.getElementById('testLogStatus').textContent = '正在测试采集...';
+        document.getElementById('testLogStatus').style.color = '#475569';
+        document.getElementById('testLogContent').textContent = '';
+
+        apiPost('/api/serial/test/' + id, {}).then(function(data) {
+            if (data.success) {
+                document.getElementById('testLogStatus').textContent = data.message;
+                document.getElementById('testLogStatus').style.color = data.has_data ? '#15803d' : '#d97706';
+                document.getElementById('testLogContent').textContent = data.logs || '(无数据)';
+            } else {
+                document.getElementById('testLogStatus').textContent = '测试失败: ' + (data.error || '未知错误');
+                document.getElementById('testLogStatus').style.color = '#b91c1c';
+            }
+        }).catch(function(err) {
+            document.getElementById('testLogStatus').textContent = '测试失败: ' + err.message;
+            document.getElementById('testLogStatus').style.color = '#b91c1c';
+        });
+    }
+
+    /* ===== 采集控制 ===== */
+
+    function startSelectedCollect() {
+        var ids = getSelectedConfigIds();
+        if (ids.length === 0) {
+            showToast('请先勾选要采集的配置', 'info');
+            return;
+        }
+        apiPost('/api/serial/start', { config_ids: ids }).then(function(data) {
+            showToast(data.message || '已开始采集', 'success');
+        }).catch(function(err) { showToast('开始采集失败: ' + err.message, 'error'); });
+    }
+
+    function stopSelectedCollect() {
+        var ids = getSelectedConfigIds();
+        if (ids.length === 0) {
+            apiPost('/api/serial/stop', {}).then(function(data) {
+                showToast(data.message || '已停止所有采集', 'success');
+            }).catch(function(err) { showToast('停止采集失败: ' + err.message, 'error'); });
+            return;
+        }
+        apiPost('/api/serial/stop', { config_ids: ids }).then(function(data) {
+            showToast(data.message || '已停止采集', 'success');
+        }).catch(function(err) { showToast('停止采集失败: ' + err.message, 'error'); });
+    }
+
+    /* ===== 多源实时日志 ===== */
+
+    function renderLogTabs(configs) {
+        var tabButtons = document.getElementById('logTabButtons');
+        var contentArea = document.getElementById('logContentArea');
+        tabButtons.innerHTML = '';
+        contentArea.innerHTML = '';
+
+        if (!configs || configs.length === 0) {
+            contentArea.innerHTML = '<div class="empty-text">暂无日志，请添加采集配置并开始采集</div>';
+            return;
+        }
+
+        configs.forEach(function(cfg, index) {
+            var id = cfg.id;
+            var logType = cfg.log_type || 'serial';
+            var name = cfg.name || (logType === 'serial' ? '串口' : 'JLink');
+
+            var btn = document.createElement('button');
+            btn.className = 'tab-btn' + (index === 0 ? ' active' : '');
+            btn.setAttribute('data-target', 'logTab_' + id);
+            btn.textContent = (logType === 'serial' ? '[串口]' : '[JLink]') + ' ' + name;
+            btn.onclick = function() { switchTab('logTabs', 'logTab_' + id); };
+            tabButtons.appendChild(btn);
+
+            var content = document.createElement('div');
+            content.className = 'tab-content' + (index === 0 ? ' active' : '');
+            content.id = 'logTab_' + id;
+            content.innerHTML = '<div class="log-box" id="logBox_' + id + '"></div>';
+            contentArea.appendChild(content);
+        });
+    }
+
+    function startLogPolling() {
+        if (logTimer) clearInterval(logTimer);
+        logTimer = setInterval(fetchAllLogs, 3000);
+    }
+
+    function fetchAllLogs() {
+        if (currentLogConfigs.length === 0) return;
+        currentLogConfigs.forEach(function(cfg) {
+            var id = cfg.id;
+            var logBox = document.getElementById('logBox_' + id);
+            if (!logBox) return;
+
+            apiGet('/api/serial/logs/' + id).then(function(data) {
+                var logs = data.logs || '';
+                var lines = typeof logs === 'string' ? logs.split('\n') : [];
+                if (lines.length > 500) lines = lines.slice(-500);
+                logBox.innerHTML = lines.map(function(l) {
+                    return '<div class="log-line">' + escapeHtml(l) + '</div>';
+                }).join('');
+                logBox.scrollTop = logBox.scrollHeight;
+            }).catch(function() {});
+        });
+    }
+
+    /* ===== 工具函数 ===== */
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+</script>
+{% endblock %}

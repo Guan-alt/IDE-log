@@ -1,0 +1,534 @@
+{% extends "base.html" %}
+
+{% block title %}历史记录 - IDE 升级测试系统{% endblock %}
+
+{% block content %}
+<h1 class="page-title">历史记录</h1>
+
+<!-- 筛选栏 -->
+<div class="card">
+    <div class="filter-bar">
+        <div class="form-group">
+            <label for="filterDevice">设备 SN</label>
+            <select id="filterDevice" class="form-control">
+                <option value="">全部设备</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="filterTask">测试任务</label>
+            <select id="filterTask" class="form-control">
+                <option value="">全部任务</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="filterResult">结果筛选</label>
+            <select id="filterResult" class="form-control">
+                <option value="">全部结果</option>
+                <option value="success">成功</option>
+                <option value="fail">失败</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <button class="btn btn-primary" onclick="loadRecords()">查询</button>
+        </div>
+    </div>
+</div>
+
+<!-- 记录表格 -->
+<div class="card">
+    <h2 class="card-title">测试记录</h2>
+    <table class="table" id="recordTable">
+        <thead>
+            <tr>
+                <th><input type="checkbox" id="selectAllRecords"></th>
+                <th>次数</th>
+                <th>设备 SN</th>
+                <th>目标版本</th>
+                <th>结果</th>
+                <th>耗时</th>
+                <th>开始时间</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody id="recordTableBody">
+        </tbody>
+    </table>
+    <div class="empty-text" id="recordEmptyTip" style="display:none;">暂无测试记录</div>
+    <!-- 批量操作区 -->
+    <div id="batchAction" style="display:none; margin-top:12px; text-align:right;">
+        <span id="selectedCount" style="margin-right:12px; color:#64748b; font-size:14px;"></span>
+        <button class="btn btn-success" onclick="generateBatchReport()">生成测试报告</button>
+    </div>
+    <!-- 分页 -->
+    <div id="recordPagination" style="display:none; margin-top:16px; text-align:center;"></div>
+</div>
+
+<!-- AI 分析报告模态框 -->
+<div class="modal" id="reportModal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <span class="modal-title">AI 分析报告</span>
+            <button class="modal-close" onclick="hideModal('reportModal')">&times;</button>
+        </div>
+        <div class="modal-body" id="reportModalBody">
+            <!-- 报告内容由 JS 填充 -->
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    /* ===== 历史记录页面逻辑 ===== */
+
+    var currentPage = 1;
+    var currentTotalPages = 1;
+
+    // 页面加载初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        loadDeviceFilter();
+        loadTaskFilter();
+        loadRecords();
+
+        // 全选/取消全选
+        var selectAll = document.getElementById('selectAllRecords');
+        if (selectAll) {
+            selectAll.addEventListener('change', function() {
+                var checkboxes = document.querySelectorAll('.record-checkbox');
+                checkboxes.forEach(function(cb) { cb.checked = selectAll.checked; });
+                updateBatchButton();
+            });
+        }
+
+        // 单个复选框变化
+        document.addEventListener('change', function(e) {
+            if (e.target && e.target.classList && e.target.classList.contains('record-checkbox')) {
+                // 更新全选框状态
+                var checkboxes = document.querySelectorAll('.record-checkbox');
+                var allChecked = checkboxes.length > 0;
+                checkboxes.forEach(function(cb) { if (!cb.checked) allChecked = false; });
+                var selectAllEl = document.getElementById('selectAllRecords');
+                if (selectAllEl) selectAllEl.checked = allChecked;
+                updateBatchButton();
+            }
+        });
+    });
+
+    // 筛选条件变化时自动查询（回到第一页）
+    document.getElementById('filterDevice').addEventListener('change', function() { currentPage = 1; loadRecords(); });
+    document.getElementById('filterTask').addEventListener('change', function() { currentPage = 1; loadRecords(); });
+    document.getElementById('filterResult').addEventListener('change', function() { currentPage = 1; loadRecords(); });
+
+    // 加载任务筛选下拉
+    function loadTaskFilter() {
+        apiGet('/api/tasks').then(function(data) {
+            var tasks = (data && data.tasks) || [];
+            var select = document.getElementById('filterTask');
+            tasks.forEach(function(t) {
+                var opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.name + (t.status === '进行中' ? '' : ' [' + t.status + ']');
+                select.appendChild(opt);
+            });
+        }).catch(function() {});
+    }
+
+    // 加载设备筛选下拉
+    function loadDeviceFilter() {
+        apiGet('/api/devices').then(function(data) {
+            var list = data.devices || data || [];
+            var select = document.getElementById('filterDevice');
+            list.forEach(function(device) {
+                var sn = device.sn || device.serial_number || '';
+                var name = device.name || device.device_name || '';
+                var option = document.createElement('option');
+                option.value = sn;
+                option.textContent = name ? (name + ' (' + sn + ')') : sn;
+                select.appendChild(option);
+            });
+        }).catch(function(err) {
+            showToast('获取设备列表失败: ' + err.message, 'error');
+        });
+    }
+
+    // 加载历史记录
+    function loadRecords() {
+        var sn = document.getElementById('filterDevice').value;
+        var result = document.getElementById('filterResult').value;
+        var taskId = document.getElementById('filterTask').value;
+
+        var params = [];
+        if (sn) params.push('sn=' + encodeURIComponent(sn));
+        if (taskId) params.push('task_id=' + encodeURIComponent(taskId));
+        if (result) params.push('result=' + encodeURIComponent(result));
+        params.push('page=' + currentPage);
+        params.push('page_size=15');
+        var url = '/api/records' + (params.length ? '?' + params.join('&') : '');
+
+        apiGet(url).then(function(data) {
+            var list = data.records || data || [];
+            currentTotalPages = data.total_pages || 1;
+            renderRecords(list);
+            renderPagination(data);
+            // 重置选中状态
+            var selectAll = document.getElementById('selectAllRecords');
+            if (selectAll) selectAll.checked = false;
+            var batchAction = document.getElementById('batchAction');
+            if (batchAction) batchAction.style.display = 'none';
+        }).catch(function(err) {
+            showToast('获取记录失败: ' + err.message, 'error');
+        });
+    }
+
+    // 跳转页码
+    function goToPage(page) {
+        if (page < 1 || page > currentTotalPages) return;
+        currentPage = page;
+        loadRecords();
+    }
+
+    // 渲染分页条
+    function renderPagination(data) {
+        var container = document.getElementById('recordPagination');
+        var total = data.total || 0;
+        var page = data.page || 1;
+        var totalPages = data.total_pages || 1;
+
+        if (total <= 15) {
+            container.style.display = 'none';
+            return;
+        }
+
+        container.style.display = 'block';
+
+        var html = '<div style="display:inline-flex;align-items:center;gap:4px;font-size:14px;">';
+        html += '<span style="color:#64748b;margin-right:8px;">共 ' + total + ' 条</span>';
+
+        // 上一页
+        if (page > 1) {
+            html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(' + (page - 1) + ')" style="padding:4px 12px;">上一页</button>';
+        } else {
+            html += '<button class="btn btn-sm btn-secondary" disabled style="padding:4px 12px;opacity:0.5;">上一页</button>';
+        }
+
+        // 页码按钮
+        var startPage = Math.max(1, page - 2);
+        var endPage = Math.min(totalPages, page + 2);
+        if (startPage > 1) {
+            html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(1)" style="padding:4px 10px;">1</button>';
+            if (startPage > 2) html += '<span style="padding:0 4px;">...</span>';
+        }
+        for (var p = startPage; p <= endPage; p++) {
+            if (p === page) {
+                html += '<button class="btn btn-sm btn-primary" style="padding:4px 10px;">' + p + '</button>';
+            } else {
+                html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(' + p + ')" style="padding:4px 10px;">' + p + '</button>';
+            }
+        }
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) html += '<span style="padding:0 4px;">...</span>';
+            html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(' + totalPages + ')" style="padding:4px 10px;">' + totalPages + '</button>';
+        }
+
+        // 下一页
+        if (page < totalPages) {
+            html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(' + (page + 1) + ')" style="padding:4px 12px;">下一页</button>';
+        } else {
+            html += '<button class="btn btn-sm btn-secondary" disabled style="padding:4px 12px;opacity:0.5;">下一页</button>';
+        }
+
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    // 更新批量操作按钮状态
+    function updateBatchButton() {
+        var checkboxes = document.querySelectorAll('.record-checkbox:checked');
+        var count = checkboxes.length;
+        var batchAction = document.getElementById('batchAction');
+        var selectedCount = document.getElementById('selectedCount');
+        if (count > 0) {
+            batchAction.style.display = 'block';
+            selectedCount.textContent = '已选 ' + count + ' 条';
+        } else {
+            batchAction.style.display = 'none';
+        }
+    }
+
+    // 生成批量测试报告
+    function generateBatchReport() {
+        var selectedIds = [];
+        document.querySelectorAll('.record-checkbox:checked').forEach(function(cb) {
+            var val = cb.value;
+            if (val && !isNaN(Number(val))) {
+                selectedIds.push(Number(val));
+            }
+        });
+
+        if (selectedIds.length === 0) {
+            showToast('请至少选择一条记录', 'error');
+            return;
+        }
+
+        // 打开弹窗，显示进度动画
+        var modalBody = document.getElementById('reportModalBody');
+        document.querySelector('#reportModal .modal-title').textContent = 'AI 测试报告生成中';
+        modalBody.innerHTML =
+            '<div class="analyze-progress">' +
+                '<div class="analyze-spinner"></div>' +
+                '<div class="analyze-steps">' +
+                    '<div class="analyze-step" id="batchStep1"><span class="step-icon">⏳</span> 收集选中记录数据...</div>' +
+                    '<div class="analyze-step" id="batchStep2"><span class="step-icon">⏳</span> 调用 AI 生成综合报告...</div>' +
+                    '<div class="analyze-step" id="batchStep3"><span class="step-icon">⏳</span> 生成完成...</div>' +
+                '</div>' +
+                '<div class="analyze-tip">AI 分析可能需要数十秒，请耐心等待...</div>' +
+            '</div>';
+        showModal('reportModal');
+
+        // 模拟分步进度动画
+        var stepIdx = 0;
+        var steps = ['batchStep1', 'batchStep2', 'batchStep3'];
+        var stepTimer = setInterval(function() {
+            stepIdx++;
+            if (stepIdx < steps.length) {
+                var doneEl = document.getElementById(steps[stepIdx - 1]);
+                if (doneEl) { doneEl.querySelector('.step-icon').textContent = '✅'; doneEl.classList.add('done'); }
+                var currEl = document.getElementById(steps[stepIdx]);
+                if (currEl) { currEl.querySelector('.step-icon').textContent = '🔄'; currEl.classList.add('active'); }
+            }
+        }, 3000);
+
+        apiPost('/api/ai/batch-report', {record_ids: selectedIds}).then(function(data) {
+            clearInterval(stepTimer);
+            // 标记所有步骤完成
+            steps.forEach(function(sid) {
+                var el = document.getElementById(sid);
+                if (el) { el.querySelector('.step-icon').textContent = '✅'; el.classList.add('done'); el.classList.remove('active'); }
+            });
+
+            var report = data.report || '';
+            if (report.indexOf('分析失败') === 0) {
+                showToast('AI 分析失败: ' + report, 'error');
+                modalBody.innerHTML = '<div class="empty-text">' + escapeHtml(report) + '</div>';
+            } else {
+                document.querySelector('#reportModal .modal-title').textContent = 'AI 综合测试报告';
+                modalBody.innerHTML = '<div class="report-section"><div class="md-content">' +
+                    renderMarkdown(report) + '</div></div>';
+            }
+        }).catch(function(err) {
+            clearInterval(stepTimer);
+            showToast('生成报告失败: ' + err.message, 'error');
+            hideModal('reportModal');
+        });
+    }
+
+    // 渲染记录表格
+    function renderRecords(records) {
+        var tbody = document.getElementById('recordTableBody');
+        var emptyTip = document.getElementById('recordEmptyTip');
+        var table = document.getElementById('recordTable');
+        tbody.innerHTML = '';
+
+        if (!records || records.length === 0) {
+            table.style.display = 'none';
+            emptyTip.style.display = 'block';
+            return;
+        }
+
+        table.style.display = 'table';
+        emptyTip.style.display = 'none';
+
+        records.forEach(function(record, index) {
+            var id = record.id || record._id || '';
+            var sn = record.sn || record.device_sn || '';
+            var sourceVer = record.source_version || '';
+            var targetVer = record.target_version || record.version || '-';
+            // 显示 "来源 → 目标" 格式
+            var versionDisplay = targetVer;
+            if (sourceVer && targetVer && sourceVer !== targetVer) {
+                versionDisplay = sourceVer + ' → ' + targetVer;
+            }
+            var result = record.result || '';
+            var duration = record.duration || record.elapsed_time || '-';
+            var startTime = record.start_time || record.created_at || record.time || '-';
+
+            var durationText = duration;
+            if (typeof duration === 'number') {
+                if (duration >= 60) {
+                    var min = Math.floor(duration / 60);
+                    var sec = (duration % 60).toFixed(0);
+                    durationText = min + '分' + sec + '秒';
+                } else {
+                    durationText = duration.toFixed(1) + '秒';
+                }
+            }
+
+            var resultClass = 'tag-info';
+            var resultText = result;
+            if (result && (result.indexOf('成功') >= 0)) {
+                resultClass = 'tag-success';
+                resultText = '成功';
+            } else if (result && (result.indexOf('失败') >= 0 || result.indexOf('超时') >= 0 || result === 'OTA请求失败')) {
+                resultClass = 'tag-danger';
+                resultText = '失败';
+            }
+
+            var actions = '-';
+            var isFail = (resultText === '失败');
+            if (isFail && id) {
+                actions = '<div class="action-group">' +
+                    '<button class="btn btn-primary btn-sm" onclick="viewReport(\'' + id + '\')">查看分析</button>' +
+                    '<button class="btn btn-warning btn-sm" onclick="reAnalyze(\'' + id + '\')">重新分析</button>' +
+                    '</div>';
+            } else if (id) {
+                actions = '<button class="btn btn-primary btn-sm" onclick="viewReport(\'' + id + '\')">查看分析</button>';
+            }
+
+            // 行号 = (当前页-1)*每页条数 + 索引 + 1
+            var rowNum = (currentPage - 1) * 15 + index + 1;
+
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td><input type="checkbox" class="record-checkbox" value="' + escapeHtml(String(id)) + '"></td>' +
+                '<td>' + rowNum + '</td>' +
+                '<td>' + escapeHtml(sn) + '</td>' +
+                '<td>' + escapeHtml(versionDisplay) + '</td>' +
+                '<td><span class="tag ' + resultClass + '">' + escapeHtml(resultText) + '</span></td>' +
+                '<td>' + escapeHtml(String(durationText)) + '</td>' +
+                '<td>' + escapeHtml(startTime) + '</td>' +
+                '<td>' + actions + '</td>';
+            tbody.appendChild(tr);
+        });
+    }
+
+    // 简易 Markdown 渲染（支持 ## 标题、**粗体**、```代码块、`行内代码`、换行）
+    function renderMarkdown(md) {
+        if (!md) return '';
+        var html = escapeHtml(md);
+        // 代码块 ```...```
+        html = html.replace(/```([\s\S]*?)```/g, function(m, p1) {
+            return '<pre class="md-code-block">' + p1 + '</pre>';
+        });
+        // 标题 ## / ###
+        html = html.replace(/^### (.+)$/gm, '<h4 class="md-h4">$1</h4>');
+        html = html.replace(/^## (.+)$/gm, '<h3 class="md-h3">$1</h3>');
+        // 粗体 **text**
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        // 行内代码 `text`
+        html = html.replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>');
+        // 换行
+        html = html.replace(/\n/g, '<br>');
+        return html;
+    }
+
+    // 查看 AI 分析报告
+    function viewReport(recordId) {
+        apiGet('/api/ai/report/' + recordId).then(function(data) {
+            var aiText = data.ai_analysis || data.report || '';
+            if (!aiText) {
+                document.getElementById('reportModalBody').innerHTML =
+                    '<div class="empty-text">' + escapeHtml(data.message || '暂无分析报告数据，请先点击"重新分析"') + '</div>';
+                showModal('reportModal');
+                return;
+            }
+
+            // 基本信息
+            var html = '';
+            if (data.result) {
+                html += '<div class="report-section"><h4>升级结果</h4><p>' + escapeHtml(data.result) + '</p></div>';
+            }
+            if (data.fail_reason) {
+                html += '<div class="report-section"><h4>失败原因</h4><p>' + escapeHtml(data.fail_reason) + '</p></div>';
+            }
+
+            // AI 分析报告（Markdown 渲染）
+            html += '<div class="report-section"><h4>AI 分析报告</h4><div class="md-content">' +
+                    renderMarkdown(aiText) + '</div></div>';
+
+            document.getElementById('reportModalBody').innerHTML = html;
+            showModal('reportModal');
+        }).catch(function(err) {
+            showToast('获取报告失败: ' + err.message, 'error');
+        });
+    }
+
+    // 重新分析
+    function reAnalyze(recordId) {
+        if (!confirm('确定要重新进行 AI 分析吗？')) return;
+
+        // 显示分析进度弹窗
+        var modalBody = document.getElementById('reportModalBody');
+        document.querySelector('#reportModal .modal-title').textContent = 'AI 分析中';
+        modalBody.innerHTML =
+            '<div class="analyze-progress">' +
+                '<div class="analyze-spinner"></div>' +
+                '<div class="analyze-steps">' +
+                    '<div class="analyze-step" id="step1"><span class="step-icon">⏳</span> 读取日志文件...</div>' +
+                    '<div class="analyze-step" id="step2"><span class="step-icon">⏳</span> 调用 AI 分析...</div>' +
+                    '<div class="analyze-step" id="step3"><span class="step-icon">⏳</span> 生成分析报告...</div>' +
+                '</div>' +
+                '<div class="analyze-tip">AI 分析可能需要数十秒，请耐心等待...</div>' +
+            '</div>';
+        showModal('reportModal');
+
+        // 模拟分步进度动画
+        var stepIdx = 0;
+        var steps = ['step1', 'step2', 'step3'];
+        var stepTimer = setInterval(function() {
+            stepIdx++;
+            if (stepIdx < steps.length) {
+                var doneEl = document.getElementById(steps[stepIdx - 1]);
+                if (doneEl) { doneEl.querySelector('.step-icon').textContent = '✅'; doneEl.classList.add('done'); }
+                var currEl = document.getElementById(steps[stepIdx]);
+                if (currEl) { currEl.querySelector('.step-icon').textContent = '🔄'; currEl.classList.add('active'); }
+            }
+        }, 3000);
+
+        apiPost('/api/ai/analyze/' + recordId, {}).then(function(data) {
+            clearInterval(stepTimer);
+            // 标记所有步骤完成
+            steps.forEach(function(sid) {
+                var el = document.getElementById(sid);
+                if (el) { el.querySelector('.step-icon').textContent = '✅'; el.classList.add('done'); el.classList.remove('active'); }
+            });
+
+            var result = data.ai_analysis || '';
+            if (result.indexOf('分析失败') >= 0) {
+                showToast('AI 分析失败: ' + result, 'error');
+                modalBody.innerHTML = '<div class="empty-text">' + escapeHtml(result) + '</div>';
+            } else {
+                showToast('AI 分析完成', 'success');
+                // 直接在弹窗中展示分析报告
+                document.querySelector('#reportModal .modal-title').textContent = 'AI 分析报告';
+                var html = '';
+                if (data.result) {
+                    html += '<div class="report-section"><h4>升级结果</h4><p>' + escapeHtml(data.result) + '</p></div>';
+                }
+                if (data.fail_reason) {
+                    html += '<div class="report-section"><h4>失败原因</h4><p>' + escapeHtml(data.fail_reason) + '</p></div>';
+                }
+                html += '<div class="report-section"><h4>AI 分析报告</h4><div class="md-content">' +
+                        renderMarkdown(result) + '</div></div>';
+                modalBody.innerHTML = html;
+            }
+            loadRecords();
+        }).catch(function(err) {
+            clearInterval(stepTimer);
+            showToast('分析请求失败: ' + err.message, 'error');
+            hideModal('reportModal');
+        });
+    }
+
+    /* ===== 工具函数 ===== */
+
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+</script>
+{% endblock %}

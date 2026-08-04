@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}IDE 升级测试系统{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<script>
+    // 认证检查：未登录跳转登录页
+    fetch('/api/auth/current').then(function(r) {
+        if (!r.ok) { window.location.href = '/api/auth/login'; return; }
+        return r.json();
+    }).then(function(d) {
+        if (d && d.logged_in) {
+            var name = d.user.display_name || d.user.username;
+            var userBox = document.getElementById('userBox');
+            if (userBox) {
+                userBox.querySelector('.user-name').textContent = name;
+                var avatar = document.getElementById('userAvatar');
+                if (avatar) avatar.textContent = name.charAt(0).toUpperCase();
+                userBox.style.display = 'flex';
+            }
+        }
+    }).catch(function() { window.location.href = '/api/auth/login'; });
+
+    function doLogout() {
+        fetch('/api/auth/logout', {method:'POST'}).then(function() { window.location.href = '/api/auth/login'; });
+    }
+</script>
+    <!-- 侧边栏 -->
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <span class="brand-text">IDE 升级测试系统</span>
+        </div>
+        <ul class="nav-menu">
+            <li class="nav-item"><a href="/devices" class="nav-link">设备管理</a></li>
+            <li class="nav-item"><a href="/monitor" class="nav-link">实时监控</a></li>
+            <li class="nav-item"><a href="/tasks" class="nav-link">测试任务</a></li>
+            <li class="nav-item"><a href="/records" class="nav-link">历史记录</a></li>
+            <li class="nav-item"><a href="/stats" class="nav-link">统计看板</a></li>
+            <li class="nav-item"><a href="/settings" class="nav-link">设置</a></li>
+        </ul>
+        <div id="userBox" style="display:none; margin-top:auto; padding:12px 20px; border-top:1px solid rgba(255,255,255,0.1); flex-direction:column; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span style="width:32px; height:32px; border-radius:50%; background:#6366f1; display:flex; align-items:center; justify-content:center; color:#fff; font-size:14px; flex-shrink:0;" id="userAvatar">U</span>
+                <span class="user-name" style="color:#cbd5e1; font-size:14px; overflow:hidden; text-overflow:ellipsis;">用户</span>
+            </div>
+            <button onclick="doLogout()" style="width:100%; padding:6px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.3); border-radius:6px; cursor:pointer; font-size:13px; transition:all 0.2s;">退出账号</button>
+        </div>
+    </aside>
+
+    <!-- 内容区域 -->
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- 全局 JS 工具函数（包含 fetch 封装等通用请求函数） -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

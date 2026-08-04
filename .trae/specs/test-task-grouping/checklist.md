@@ -1,0 +1,16 @@
+- [ ] TestTask 模型已创建，含 name/description/status/created_at/ended_at，to_dict() 返回关联记录数
+- [ ] OtaRecord 模型新增 task_id 字段，to_dict() 返回
+- [ ] 数据库迁移完成（test_tasks 表 + ota_records.task_id 列）
+- [ ] `/api/tasks` GET 接口返回当前用户的测试任务列表
+- [ ] `/api/tasks` POST 接口可创建新任务（名称+描述），状态为"进行中"
+- [ ] `/api/tasks/<id>/end` POST 接口可结束任务，状态变为"已完成"
+- [ ] `start_ota` 接口从请求中读取 task_id 写入 OtaRecord
+- [ ] `_start_ota_leg` 和 `start_ota_cycle` 支持传入 task_id
+- [ ] 统计接口（overview/trend/fail-reasons/version-stats/device-ranking）支持 task_id 过滤
+- [ ] 记录列表接口支持 task_id 过滤
+- [ ] 测试任务管理页面可创建、查看、结束任务
+- [ ] 侧边栏新增"测试任务"导航项
+- [ ] 监控页面新增"当前任务"下拉框，发起OTA时携带 task_id
+- [ ] 统计页面新增任务下拉框，选择后图表按任务筛选
+- [ ] 历史记录页面新增任务下拉框，选择后按任务筛选记录
+- [ ] 不选择任务时统计全部数据

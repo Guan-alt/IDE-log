@@ -1,0 +1,18 @@
+- [x] User 模型已创建，含 username/password_hash/display_name/is_admin，set_password/check_password 方法可用
+- [x] Device/OtaRecord/LogConfig/Setting 模型新增 user_id 字段
+- [x] 数据库迁移完成，现有数据关联到 admin 用户
+- [x] `/api/auth/login` 接口可验证用户名密码并写入 session
+- [x] `/api/auth/logout` 接口可清除 session
+- [x] `/api/auth/current` 接口可返回当前登录用户信息
+- [x] `@login_required` 装饰器可拦截未登录请求返回 401
+- [x] devices API 按 user_id 过滤数据
+- [x] ota API 的 cycling_tasks 按 user_id 隔离，接口加认证
+- [x] records API 按 user_id 过滤
+- [x] settings API 按 user_id 隔离，每用户独立配置
+- [x] serial API 的 jlink_loggers 按 user_id 隔离
+- [x] stats API 按 user_id 过滤
+- [x] ai_routes API 按 user_id 过滤
+- [x] 登录页面可输入用户名密码并登录
+- [x] 未登录访问任何页面时跳转登录页
+- [x] 导航栏显示当前用户名和注销按钮
+- [x] 默认 admin 用户（admin/admin）可正常登录并看到现有数据
