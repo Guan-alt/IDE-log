@@ -1,9 +1,42 @@
 import json
 import os
+import time
 import logging
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_sse_content(text):
+    """
+    解析 SSE 流式响应文本，拼接所有 delta 的 content。
+
+    部分网关（如私有部署）会强制以 text/event-stream 流式返回，
+    格式为多行 "data: {json}"，结尾可能有 "data: [DONE]"。
+
+    Returns:
+        (is_sse, content): is_sse 表示文本是否为 SSE 格式；
+                           content 为拼接出的完整文本内容
+    """
+    if not text or 'data:' not in text:
+        return False, ''
+    content_parts = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith('data:'):
+            continue
+        payload = line[len('data:'):].strip()
+        if not payload or payload == '[DONE]':
+            continue
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            continue
+        for ch in (obj.get('choices') or []):
+            delta = ch.get('delta') or {}
+            if delta.get('content'):
+                content_parts.append(delta['content'])
+    return True, ''.join(content_parts)
 
 # 分析用的系统提示词
 SYSTEM_PROMPT = """你是一位固件OTA升级分析专家。用户会提供门锁设备OTA升级失败时的日志（可能来自串口或JLink RTT）。
@@ -103,8 +136,14 @@ class AIAnalyzer:
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=60)
             response.raise_for_status()
-            data = response.json()
-            result = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            try:
+                data = response.json()
+                result = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            except ValueError:
+                # 兼容强制流式（SSE）响应的网关
+                is_sse, result = _parse_sse_content(response.content.decode('utf-8', errors='replace'))
+                if not is_sse:
+                    raise
             if result:
                 return result
             return f"分析失败：AI返回内容为空 - {response.text[:200]}"
@@ -237,8 +276,14 @@ class AIAnalyzer:
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=120)
             response.raise_for_status()
-            data = response.json()
-            result = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            try:
+                data = response.json()
+                result = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            except ValueError:
+                # 兼容强制流式（SSE）响应的网关
+                is_sse, result = _parse_sse_content(response.content.decode('utf-8', errors='replace'))
+                if not is_sse:
+                    raise
             if result:
                 return result
             return f"分析失败：AI返回内容为空 - {response.text[:200]}"
@@ -250,6 +295,131 @@ class AIAnalyzer:
             error_msg = f"分析失败：AI接口调用失败 - {e}"
             logger.error(error_msg)
             return error_msg
+
+    def test_connection(self, api_key='', model='', base_url=''):
+        """
+        测试AI服务连通性（发送最小化请求）
+        Args:
+            api_key: API Key（空字符串则使用实例配置）
+            model: 模型名（空字符串则使用实例配置）
+            base_url: API地址（空字符串则使用实例配置）
+        Returns:
+            dict: {ok, status, latency_ms, message}
+        """
+        api_key = api_key or self.api_key
+        model = model or self.model
+        base_url = (base_url or self.base_url).rstrip('/')
+
+        result = self._test_connection_once(api_key, model, base_url)
+
+        # 常见问题：私有部署网关通常要求带 /v1 前缀。
+        # 若当前地址测试失败且未以 /v1 结尾，自动尝试补 /v1 再测一次
+        if not result.get('ok') and not base_url.endswith('/v1'):
+            v1_url = base_url + '/v1'
+            retry = self._test_connection_once(api_key, model, v1_url)
+            if retry.get('ok'):
+                retry['message'] = f'连接成功（需使用带 /v1 的地址：{v1_url}）'
+                return retry
+        return result
+
+    def _test_connection_once(self, api_key, model, base_url):
+        """单次连通性测试请求（不重试）"""
+        url = f"{base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 5
+        }
+
+        start_time = time.time()
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=15)
+            latency_ms = int((time.time() - start_time) * 1000)
+            status = response.status_code
+
+            if 200 <= status < 300:
+                try:
+                    data = response.json()
+                except ValueError:
+                    is_sse, _ = _parse_sse_content(response.content.decode('utf-8', errors='replace'))
+                    if is_sse:
+                        return {'ok': True, 'status': status, 'latency_ms': latency_ms,
+                                'message': '连接成功（网关以流式SSE格式响应）'}
+                    return {'ok': False, 'status': status, 'latency_ms': latency_ms,
+                            'message': '响应不是有效JSON（可能地址错误，网关返回了网页或空内容）：' + response.text[:200]}
+                if data.get('choices'):
+                    return {'ok': True, 'status': status, 'latency_ms': latency_ms, 'message': '连接成功'}
+                return {'ok': False, 'status': status, 'latency_ms': latency_ms,
+                        'message': f'响应格式异常：{response.text[:200]}'}
+            elif status in (401, 403):
+                return {'ok': False, 'status': status, 'latency_ms': latency_ms,
+                        'message': '鉴权失败：API Key 无效或无权限'}
+            elif status == 404:
+                return {'ok': False, 'status': status, 'latency_ms': latency_ms,
+                        'message': '接口不存在：请检查 API 地址是否正确'}
+            elif status == 400:
+                return {'ok': False, 'status': status, 'latency_ms': latency_ms,
+                        'message': '请求被拒绝（可能模型不存在）：' + response.text[:200]}
+            else:
+                return {'ok': False, 'status': status, 'latency_ms': latency_ms,
+                        'message': f'调用失败（HTTP {status}）：' + response.text[:200]}
+        except requests.exceptions.Timeout:
+            latency_ms = int((time.time() - start_time) * 1000)
+            return {'ok': False, 'status': 0, 'latency_ms': latency_ms, 'message': '连接超时（15秒）'}
+        except requests.exceptions.ConnectionError:
+            latency_ms = int((time.time() - start_time) * 1000)
+            return {'ok': False, 'status': 0, 'latency_ms': latency_ms,
+                    'message': '无法连接服务器，请检查 API 地址和网络'}
+        except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"AI连通性测试失败: {e}")
+            return {'ok': False, 'status': 0, 'latency_ms': latency_ms, 'message': f'调用失败：{e}'}
+
+    def list_models(self, api_key='', base_url=''):
+        """
+        获取AI服务支持的模型列表（OpenAI兼容 /models 接口）
+        Args:
+            api_key: API Key（空字符串则使用实例配置）
+            base_url: API地址（空字符串则使用实例配置）
+        Returns:
+            dict: {ok, models, message}
+        """
+        api_key = api_key or self.api_key
+        base_url = (base_url or self.base_url).rstrip('/')
+
+        url = f"{base_url}/models"
+        headers = {
+            "Authorization": f"Bearer {api_key}"
+        }
+
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            status = response.status_code
+
+            if status == 200:
+                data = response.json()
+                model_list = data.get('data', [])
+                models = [{'id': m.get('id', ''), 'name': m.get('id', '')}
+                          for m in model_list if m.get('id')]
+                return {'ok': True, 'models': models,
+                        'message': f'获取成功，共{len(models)}个模型'}
+            elif status in (401, 403):
+                return {'ok': False, 'message': '鉴权失败：API Key 无效或无权限'}
+            elif status == 404:
+                return {'ok': False, 'message': '该服务不支持模型列表接口，请手动输入模型名'}
+            else:
+                return {'ok': False, 'message': f'获取失败（HTTP {status}）：' + response.text[:200]}
+        except requests.exceptions.Timeout:
+            return {'ok': False, 'message': '请求超时（15秒）'}
+        except requests.exceptions.ConnectionError:
+            return {'ok': False, 'message': '无法连接服务器，请检查 API 地址和网络'}
+        except Exception as e:
+            logger.error(f"获取模型列表失败: {e}")
+            return {'ok': False, 'message': f'获取模型列表失败：{e}'}
 
 
 def get_ai_analyzer():

@@ -149,30 +149,40 @@
     }
 
     function endTask(id) {
-        if (!confirm('确定要结束此测试任务吗？结束后状态变为"已完成"，但已有OTA记录不受影响。')) return;
-        apiPost('/api/tasks/' + id + '/end', {}).then(function(data) {
-            if (data.success) {
-                showToast('任务已结束', 'success');
-                loadTasks();
-            } else {
-                showToast(data.error || '结束失败', 'error');
-            }
-        }).catch(function(err) {
-            showToast('结束失败: ' + err.message, 'error');
+        showConfirmDialog({
+            title: '结束测试任务',
+            message: '确定要结束此测试任务吗？结束后状态变为"已完成"，但已有OTA记录不受影响。'
+        }, function(ok) {
+            if (!ok) return;
+            apiPost('/api/tasks/' + id + '/end', {}).then(function(data) {
+                if (data.success) {
+                    showToast('任务已结束', 'success');
+                    loadTasks();
+                } else {
+                    showToast(data.error || '结束失败', 'error');
+                }
+            }).catch(function(err) {
+                showToast('结束失败: ' + err.message, 'error');
+            });
         });
     }
 
     function deleteTask(id, name) {
-        if (!confirm('确定要删除任务"' + name + '"吗？仅当任务无关联OTA记录时可删除。')) return;
-        apiDelete('/api/tasks/' + id).then(function(data) {
-            if (data.success) {
-                showToast('任务已删除', 'success');
-                loadTasks();
-            } else {
-                showToast(data.error || '删除失败', 'error');
-            }
-        }).catch(function(err) {
-            showToast('删除失败: ' + err.message, 'error');
+        showConfirmDialog({
+            title: '删除测试任务',
+            message: '确定要删除任务"' + name + '"吗？仅当任务无关联OTA记录时可删除。'
+        }, function(ok) {
+            if (!ok) return;
+            apiDelete('/api/tasks/' + id).then(function(data) {
+                if (data.success) {
+                    showToast('任务已删除', 'success');
+                    loadTasks();
+                } else {
+                    showToast(data.error || '删除失败', 'error');
+                }
+            }).catch(function(err) {
+                showToast('删除失败: ' + err.message, 'error');
+            });
         });
     }
 

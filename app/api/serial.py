@@ -378,6 +378,13 @@ def start_collection():
                 'port': config.port, 'name': config.name, 'success': success
             })
         elif config.log_type == 'jlink':
+            # 若该配置已有采集器实例，先停止旧的，防止进程堆积占用JLink
+            old_logger = user_jlink_loggers.get(config.id)
+            if old_logger is not None:
+                try:
+                    old_logger.stop()
+                except Exception:
+                    pass
             jlink_logger = JLinkLogger(
                 name=config.name,
                 device_sn=config.device_sn,

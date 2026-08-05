@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, session
 from app import db
-from app.models.models import Device, OtaRecord, Setting
+from app.models.models import Device, OtaRecord, Setting, TestTask
 from app.services.ota_client import OtaClient
 from app.services.ai_analyzer import get_ai_analyzer
 from app.utils.decorators import login_required, get_current_user_id
@@ -30,16 +30,25 @@ def get_ota_client(env_id=None, user_id=None):
     if env_id:
         env = OtaEnvironment.query.filter_by(id=env_id, user_id=user_id).first()
         if env:
-            return OtaClient(env.ota_url, env.token, 10)
+            return OtaClient(env.ota_url, env.token, 10, region=env.region or 'cn')
     # 2. 回退到该用户第一个环境
     first_env = OtaEnvironment.query.filter_by(user_id=user_id).order_by(OtaEnvironment.sort_order.asc()).first()
     if first_env:
-        return OtaClient(first_env.ota_url, first_env.token, 10)
+        return OtaClient(first_env.ota_url, first_env.token, 10, region=first_env.region or 'cn')
     # 3. 最终回退到 Setting
     setting = Setting.query.filter_by(user_id=user_id).first()
     if setting:
         return OtaClient(setting.ota_url, setting.token, 10)
     return OtaClient('https://test-lkadmin-lockin-management.lockin.com', '', 10)
+
+def resolve_env_id(sn, env_id=None, user_id=None):
+    """设备已关联OTA环境时优先使用设备环境，否则使用传入的env_id"""
+    if user_id is None:
+        user_id = get_current_user_id()
+    device = Device.query.filter_by(sn=sn, user_id=user_id).first()
+    if device and device.env_id:
+        return device.env_id
+    return env_id
 
 def save_logs_for_record(record, device_sn):
     """保存当前运行中的串口/JLink日志到文件，并更新record.log_paths"""
@@ -118,11 +127,18 @@ def start_ota():
     sn = data.get('sn')
     target_version = data.get('target_version')
     env_id = data.get('env_id')
-    task_id = data.get('task_id')  # 关联的测试任务ID，可为空
+    task_id = data.get('task_id')  # 关联的测试任务ID，必填
     if not sn or not target_version:
         return jsonify({'error': '缺少sn或target_version参数'}), 400
+    if not task_id:
+        return jsonify({'error': '请先选择测试任务'}), 400
 
     user_id = get_current_user_id()
+    # 校验测试任务存在且属于当前用户
+    if not TestTask.query.filter_by(id=task_id, user_id=user_id).first():
+        return jsonify({'error': '测试任务不存在或无权使用'}), 400
+    # 设备已关联环境时优先使用设备环境
+    env_id = resolve_env_id(sn, env_id, user_id)
     client = get_ota_client(env_id, user_id)
     success, message = client.ota_start(sn, target_version)
 
@@ -187,7 +203,10 @@ def start_ota():
 @ota_bp.route('/versions/<string:sn>', methods=['GET'])
 @login_required
 def get_versions(sn):
-    client = get_ota_client()
+    user_id = get_current_user_id()
+    # 设备已关联环境时使用设备环境查询版本列表
+    env_id = resolve_env_id(sn, None, user_id)
+    client = get_ota_client(env_id, user_id)
     versions = client.get_available_versions(sn)
     return jsonify({'success': True, 'versions': versions})
 
@@ -339,7 +358,7 @@ def start_ota_cycle():
     downgrade_version = data.get('downgrade_version')
     cycle_count = int(data.get('cycle_count', 1))
     env_id = data.get('env_id')
-    task_id = data.get('task_id')  # 关联的测试任务ID，可为空
+    task_id = data.get('task_id')  # 关联的测试任务ID，必填
 
     if not sn or not upgrade_version or not downgrade_version:
         return jsonify({'error': '缺少sn、upgrade_version或downgrade_version参数'}), 400
@@ -347,6 +366,15 @@ def start_ota_cycle():
         return jsonify({'error': '循环次数至少为1'}), 400
 
     user_id = get_current_user_id()
+
+    # 校验测试任务存在且属于当前用户
+    if not task_id:
+        return jsonify({'error': '请先选择测试任务'}), 400
+    if not TestTask.query.filter_by(id=task_id, user_id=user_id).first():
+        return jsonify({'error': '测试任务不存在或无权使用'}), 400
+
+    # 设备已关联环境时优先使用设备环境
+    env_id = resolve_env_id(sn, env_id, user_id)
 
     # 检查是否已有循环任务
     with cycle_lock:
@@ -469,6 +497,8 @@ def get_progress(sn):
     task = cycling_tasks.get(user_id, {}).get(sn)
     if task and task.get('env_id'):
         env_id = task['env_id']
+    # 设备已关联环境时优先使用设备环境
+    env_id = resolve_env_id(sn, env_id, user_id)
     client = get_ota_client(env_id, user_id)
     progress = client.get_progress(sn)
 

@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app import db
-from app.models.models import OtaRecord
-from app.services.ai_analyzer import get_ai_analyzer
+from app.models.models import OtaRecord, Setting
+from app.services.ai_analyzer import AIAnalyzer, get_ai_analyzer
 from app.utils.decorators import login_required, get_current_user_id
 import logging
 
@@ -84,3 +84,65 @@ def batch_report():
         'report': report,
         'record_count': len(records)
     })
+
+
+@ai_bp.route('/test-connection', methods=['POST'])
+@login_required
+def test_connection():
+    """测试AI服务连通性"""
+    data = request.get_json() or {}
+    api_key = data.get('api_key')
+    model = data.get('model')
+    base_url = data.get('base_url')
+
+    # 缺失字段回退到当前用户已保存的配置
+    setting = Setting.query.filter_by(user_id=get_current_user_id()).first()
+    if setting:
+        api_key = api_key or setting.ai_api_key or ''
+        model = model or setting.ai_model or ''
+        base_url = base_url or setting.ai_base_url or ''
+    else:
+        api_key = api_key or ''
+        model = model or ''
+        base_url = base_url or ''
+
+    # 空值给默认
+    if not base_url:
+        base_url = 'https://api.deepseek.com'
+    if not model:
+        model = 'deepseek-chat'
+
+    logger.info(f"AI连通性测试开始：base_url={base_url}, model={model}")
+    analyzer = AIAnalyzer(api_key, model, base_url)
+    result = analyzer.test_connection()
+    logger.info(f"AI连通性测试完成：ok={result.get('ok')}, status={result.get('status')}, "
+                f"latency_ms={result.get('latency_ms')}")
+    return jsonify(result)
+
+
+@ai_bp.route('/models', methods=['POST'])
+@login_required
+def list_models():
+    """获取AI服务支持的模型列表"""
+    data = request.get_json() or {}
+    api_key = data.get('api_key')
+    base_url = data.get('base_url')
+
+    # 缺失字段回退到当前用户已保存的配置
+    setting = Setting.query.filter_by(user_id=get_current_user_id()).first()
+    if setting:
+        api_key = api_key or setting.ai_api_key or ''
+        base_url = base_url or setting.ai_base_url or ''
+    else:
+        api_key = api_key or ''
+        base_url = base_url or ''
+
+    # 空值给默认
+    if not base_url:
+        base_url = 'https://api.deepseek.com'
+
+    logger.info(f"获取AI模型列表开始：base_url={base_url}")
+    analyzer = AIAnalyzer(api_key, '', base_url)
+    result = analyzer.list_models()
+    logger.info(f"获取AI模型列表完成：ok={result.get('ok')}")
+    return jsonify(result)

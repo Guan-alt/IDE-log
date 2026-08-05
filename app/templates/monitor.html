@@ -32,7 +32,7 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="otaTaskSelect">当前任务（可选）</label>
+                    <label for="otaTaskSelect">当前任务（必选）</label>
                     <select id="otaTaskSelect" class="form-control">
                         <option value="">无任务</option>
                     </select>
@@ -121,18 +121,15 @@
     <!-- 左侧：日志采集控制 + 配置 -->
     <div class="monitor-left-col">
         <div class="card">
-            <h2 class="card-title">日志采集控制</h2>
+            <h2 class="card-title">日志采集</h2>
             <div class="action-group">
                 <button class="btn btn-success btn-sm" onclick="startSelectedCollect()">开始采集</button>
                 <button class="btn btn-danger btn-sm" onclick="stopSelectedCollect()">停止采集</button>
                 <button class="btn btn-primary btn-sm" onclick="openConfigModal()">添加配置</button>
                 <button class="btn btn-secondary btn-sm" onclick="loadLogConfigs()">刷新</button>
             </div>
-        </div>
-
-        <div class="card">
-            <h2 class="card-title">采集配置</h2>
-            <table class="table" id="logConfigTable">
+            <div id="collectorStatus" style="margin-top:12px; font-size:13px; color:#475569;"></div>
+            <table class="table" id="logConfigTable" style="margin-top:12px;">
                 <thead>
                     <tr>
                         <th style="width:36px;"><input type="checkbox" id="selectAllConfigs" onchange="toggleSelectAll(this)"></th>
@@ -326,6 +323,7 @@
         scanJLinks();
         loadLogConfigs();
         startLogPolling();
+        refreshCollectorStatus();
         loadOtaTasks();
         // 先加载设备列表，完成后恢复OTA状态
         loadDevicesForOta().then(function() {
@@ -449,6 +447,8 @@
     function loadDevicesForOta() {
         return apiGet('/api/devices').then(function(data) {
             var list = data.devices || data || [];
+            // 缓存设备列表（含关联环境），供选择设备时自动切换环境
+            window._otaDeviceList = list;
             var select = document.getElementById('otaDeviceSelect');
             select.innerHTML = '<option value="">请选择设备</option>';
             list.forEach(function(device) {
@@ -464,8 +464,32 @@
         });
     }
 
+    // 根据设备关联的环境自动切换环境下拉
+    function applyDeviceEnv(sn) {
+        var list = window._otaDeviceList || [];
+        var device = null;
+        for (var i = 0; i < list.length; i++) {
+            if ((list[i].sn || list[i].serial_number) === sn) { device = list[i]; break; }
+        }
+        if (!device || !device.env_id) return;
+        var select = document.getElementById('otaEnvSelect');
+        if (!select) return;
+        for (var i = 0; i < select.options.length; i++) {
+            if (select.options[i].value === String(device.env_id)) {
+                select.selectedIndex = i;
+                switchOtaEnv(device.env_id);
+                if (device.env_name) {
+                    showToast('已切换到设备关联环境: ' + device.env_name, 'success');
+                }
+                return;
+            }
+        }
+    }
+
     document.getElementById('otaDeviceSelect').addEventListener('change', function() {
         var sn = this.value;
+        // 设备已关联环境时自动切换环境下拉
+        applyDeviceEnv(sn);
         // 同时填充单次和循环模式的版本下拉
         var singleVerSelect = document.getElementById('singleTargetVersion');
         var upVerSelect = document.getElementById('upgradeVersion');
@@ -486,7 +510,19 @@
                 versions.forEach(function(v) {
                     var opt = document.createElement('option');
                     opt.value = v.version;
-                    opt.textContent = v.version + (v.description ? (' - ' + v.description) : '');
+                    // 显示优化：版本号 + 截断描述 + 强制标记
+                    var desc = v.description ? String(v.description).trim() : '';
+                    if (desc.length > 22) {
+                        desc = desc.substring(0, 22) + '…';
+                    }
+                    var label = v.version;
+                    if (desc) {
+                        label += ' — ' + desc;
+                    }
+                    if (v.force) {
+                        label += '（强制）';
+                    }
+                    opt.textContent = label;
                     sel.appendChild(opt);
                 });
             });
@@ -548,7 +584,8 @@
         var targetVer = document.getElementById('singleTargetVersion').value;
         if (!targetVer) { showToast('请选择目标版本', 'error'); return; }
         localStorage.setItem('ota_single_ver', targetVer);
-        var taskId = document.getElementById('otaTaskSelect').value || null;
+        var taskId = document.getElementById('otaTaskSelect').value;
+        if (!taskId) { showToast('请选择测试任务', 'error'); return; }
         var envId = parseInt(document.getElementById('otaEnvSelect').value) || null;
 
         // 开始OTA前自动启动日志采集
@@ -580,7 +617,8 @@
         localStorage.setItem('ota_upgrade_ver', upgradeVer);
         localStorage.setItem('ota_downgrade_ver', downgradeVer);
         localStorage.setItem('ota_cycle_count', cycleCount);
-        var taskId = document.getElementById('otaTaskSelect').value || null;
+        var taskId = document.getElementById('otaTaskSelect').value;
+        if (!taskId) { showToast('请选择测试任务', 'error'); return; }
         var envId = parseInt(document.getElementById('otaEnvSelect').value) || null;
 
         autoStartLogCollection(function() {
@@ -851,11 +889,16 @@
     function stopOta() {
         if (!currentOtaSn) return;
         if (currentOtaMode === 'cycle') {
-            if (!confirm('确定要停止循环OTA压测吗？当前进行中的升级/降级将继续执行完毕。')) return;
-            apiPost('/api/ota/stop-cycle', { sn: currentOtaSn }).then(function(data) {
-                showToast(data.message || '已停止循环', 'success');
-                cleanupOtaUI();
-            }).catch(function(err) { showToast('停止失败: ' + err.message, 'error'); });
+            showConfirmDialog({
+                title: '停止循环OTA',
+                message: '确定要停止循环OTA压测吗？当前进行中的升级/降级将继续执行完毕。'
+            }, function(ok) {
+                if (!ok) return;
+                apiPost('/api/ota/stop-cycle', { sn: currentOtaSn }).then(function(data) {
+                    showToast(data.message || '已停止循环', 'success');
+                    cleanupOtaUI();
+                }).catch(function(err) { showToast('停止失败: ' + err.message, 'error'); });
+            });
         } else {
             // 单次OTA无法中途停止，但可以清理UI
             showToast('单次OTA无法中途停止，等待完成', 'info');
@@ -1161,11 +1204,16 @@
     });
 
     function deleteLogConfig(id) {
-        if (!confirm('确定要删除该配置吗？')) return;
-        apiDelete('/api/serial/configs/' + id).then(function() {
-            showToast('配置已删除', 'success');
-            loadLogConfigs();
-        }).catch(function(err) { showToast('删除失败: ' + err.message, 'error'); });
+        showConfirmDialog({
+            title: '删除采集配置',
+            message: '确定要删除该配置吗？'
+        }, function(ok) {
+            if (!ok) return;
+            apiDelete('/api/serial/configs/' + id).then(function() {
+                showToast('配置已删除', 'success');
+                loadLogConfigs();
+            }).catch(function(err) { showToast('删除失败: ' + err.message, 'error'); });
+        });
     }
 
     /* ===== 日志采集测试 ===== */
@@ -1193,6 +1241,27 @@
 
     /* ===== 采集控制 ===== */
 
+    function refreshCollectorStatus() {
+        apiGet('/api/serial/status').then(function(data) {
+            var box = document.getElementById('collectorStatus');
+            if (!box) return;
+            var parts = [];
+            var serials = data.serial || {};
+            var jlinks = data.jlink || {};
+            Object.keys(serials).forEach(function(id) {
+                var s = serials[id];
+                parts.push((s.is_running ? '串口运行中' : '串口已停止') + ' (' + (s.name || id) + ')');
+            });
+            Object.keys(jlinks).forEach(function(id) {
+                var j = jlinks[id];
+                parts.push((j.is_running ? 'JLink运行中' : 'JLink已停止') + ' (' + (j.name || id) + ')');
+            });
+            box.innerHTML = parts.length
+                ? parts.map(function(p) { return '<span class="tag ' + (p.indexOf('运行中') >= 0 ? 'tag-success' : 'tag-danger') + '">' + escapeHtml(p) + '</span> '; }).join('')
+                : '<span style="color:#94a3b8;">未启动采集器</span>';
+        }).catch(function() {});
+    }
+
     function startSelectedCollect() {
         var ids = getSelectedConfigIds();
         if (ids.length === 0) {
@@ -1201,6 +1270,7 @@
         }
         apiPost('/api/serial/start', { config_ids: ids }).then(function(data) {
             showToast(data.message || '已开始采集', 'success');
+            refreshCollectorStatus();
         }).catch(function(err) { showToast('开始采集失败: ' + err.message, 'error'); });
     }
 
@@ -1209,11 +1279,13 @@
         if (ids.length === 0) {
             apiPost('/api/serial/stop', {}).then(function(data) {
                 showToast(data.message || '已停止所有采集', 'success');
+                refreshCollectorStatus();
             }).catch(function(err) { showToast('停止采集失败: ' + err.message, 'error'); });
             return;
         }
         apiPost('/api/serial/stop', { config_ids: ids }).then(function(data) {
             showToast(data.message || '已停止采集', 'success');
+            refreshCollectorStatus();
         }).catch(function(err) { showToast('停止采集失败: ' + err.message, 'error'); });
     }
 
@@ -1266,10 +1338,15 @@
                 var logs = data.logs || '';
                 var lines = typeof logs === 'string' ? logs.split('\n') : [];
                 if (lines.length > 500) lines = lines.slice(-500);
-                logBox.innerHTML = lines.map(function(l) {
-                    return '<div class="log-line">' + escapeHtml(l) + '</div>';
-                }).join('');
-                logBox.scrollTop = logBox.scrollHeight;
+                if (lines.length === 1 && lines[0] === '') {
+                    // 无数据：区分采集器状态，避免误以为系统故障
+                    logBox.innerHTML = '<div class="log-line" style="color:#64748b;">正在采集，等待设备数据输出...（若长时间无数据，请检查串口连接/波特率/设备是否发送日志）</div>';
+                } else {
+                    logBox.innerHTML = lines.map(function(l) {
+                        return '<div class="log-line">' + escapeHtml(l) + '</div>';
+                    }).join('');
+                    logBox.scrollTop = logBox.scrollHeight;
+                }
             }).catch(function() {});
         });
     }

@@ -454,8 +454,16 @@
 
     // 重新分析
     function reAnalyze(recordId) {
-        if (!confirm('确定要重新进行 AI 分析吗？')) return;
+        showConfirmDialog({
+            title: '重新AI分析',
+            message: '确定要重新进行 AI 分析吗？'
+        }, function(ok) {
+            if (!ok) return;
+            reAnalyzeDo(recordId);
+        });
+    }
 
+    function reAnalyzeDo(recordId) {
         // 显示分析进度弹窗
         var modalBody = document.getElementById('reportModalBody');
         document.querySelector('#reportModal .modal-title').textContent = 'AI 分析中';

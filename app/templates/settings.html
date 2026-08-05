@@ -9,7 +9,10 @@
 <div class="card">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h2 class="card-title" style="margin:0;">OTA 环境管理</h2>
-        <button class="btn btn-success btn-sm" onclick="openEnvModal()">+ 新增环境</button>
+        <div style="display:flex; gap:8px;">
+            <a class="btn btn-secondary btn-sm" href="https://sd6syw7aku.feishu.cn/wiki/YLp4wBVZ0itu69kM73mcLef5nvd" target="_blank" rel="noopener">帮助</a>
+            <button class="btn btn-success btn-sm" onclick="openEnvModal()">+ 新增环境</button>
+        </div>
     </div>
     <div id="envListContainer">
         <div class="empty-text">加载中...</div>
@@ -48,12 +51,21 @@
                 </div>
                 <div class="form-group">
                     <label for="aiModel">AI 模型</label>
-                    <input type="text" id="aiModel" class="form-control" placeholder="例如: gpt-4o / doubao-pro">
+                    <select id="aiModel" class="form-control">
+                        <option value="">请选择模型</option>
+                        <option value="__custom__">手动输入</option>
+                    </select>
+                    <input type="text" id="aiModelCustom" class="form-control" style="display:none; margin-top:8px;" placeholder="例如: gpt-4o / doubao-pro">
                 </div>
             </div>
             <div class="form-group">
                 <label for="aiApiUrl">AI API 地址</label>
                 <input type="text" id="aiApiUrl" class="form-control" placeholder="例如: https://api.openai.com/v1">
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="loadAiModels()">获取模型列表</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="testAiConnection()">测试连通性</button>
+                <div id="aiTestResult" style="margin-top:8px;"></div>
             </div>
         </div>
 
@@ -64,8 +76,8 @@
 </div>
 
 <!-- 环境编辑弹窗 -->
-<div id="envModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999;">
-    <div style="background:#fff; margin:6% auto; padding:24px; border-radius:8px; max-width:560px; width:90%;">
+<div id="envModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+    <div style="background:#fff; padding:24px; border-radius:8px; width:92%; max-width:560px; max-height:86vh; overflow-y:auto;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
             <h2 id="envModalTitle" style="margin:0;">新增环境</h2>
             <button class="btn btn-secondary" onclick="closeEnvModal()">&times;</button>
@@ -77,16 +89,19 @@
                 <input type="text" id="envName" class="form-control" placeholder="如：线下 / 线上 / 预发布" required maxlength="100">
             </div>
             <div class="form-group" style="margin-top:12px;">
+                <label for="envRegion">区域 <span style="color:#dc2626;">*</span></label>
+                <select id="envRegion" class="form-control">
+                    <option value="cn">国内</option>
+                    <option value="os">国外</option>
+                </select>
+            </div>
+            <div class="form-group" style="margin-top:12px;">
                 <label for="envUrl">OTA 升级地址 <span style="color:#dc2626;">*</span></label>
                 <input type="text" id="envUrl" class="form-control" placeholder="https://xxx.lockin.com" required>
             </div>
             <div class="form-group" style="margin-top:12px;">
                 <label for="envToken">OTA Token</label>
                 <input type="text" id="envToken" class="form-control" placeholder="认证 Token">
-            </div>
-            <div class="form-group" style="margin-top:12px;">
-                <label for="envSort">排序（数字越小越靠前）</label>
-                <input type="number" id="envSort" class="form-control" value="0" min="0">
             </div>
             <div style="margin-top:16px; text-align:right;">
                 <button type="button" class="btn btn-secondary" onclick="closeEnvModal()" style="margin-right:8px;">取消</button>
@@ -111,7 +126,7 @@
             document.getElementById('timeout').value = cfg.ota_timeout || '';
             document.getElementById('defaultBaudrate').value = cfg.serial_default_baudrate || '115200';
             document.getElementById('aiApiKey').value = cfg.ai_api_key || '';
-            document.getElementById('aiModel').value = cfg.ai_model || '';
+            fillAiModelSelect(cfg.ai_model || '');
             document.getElementById('aiApiUrl').value = cfg.ai_base_url || '';
         }).catch(function(err) {
             showToast('获取配置失败: ' + err.message, 'error');
@@ -126,7 +141,7 @@
             ota_timeout: parseInt(document.getElementById('timeout').value) || 300,
             serial_default_baudrate: parseInt(document.getElementById('defaultBaudrate').value) || 115200,
             ai_api_key: document.getElementById('aiApiKey').value.trim(),
-            ai_model: document.getElementById('aiModel').value.trim(),
+            ai_model: getModelValue(),
             ai_base_url: document.getElementById('aiApiUrl').value.trim()
         };
 
@@ -136,6 +151,127 @@
             showToast('保存配置失败: ' + err.message, 'error');
         });
     });
+
+    /* ===== AI 分析配置（模型下拉、模型列表、连通性测试） ===== */
+
+    // 返回当前实际模型名：选"手动输入"时返回手动输入框的值，否则返回下拉框选中的值
+    function getModelValue() {
+        var select = document.getElementById('aiModel');
+        if (select.value === '__custom__') {
+            return document.getElementById('aiModelCustom').value.trim();
+        }
+        return select.value.trim();
+    }
+
+    // 下拉框切换联动：选"手动输入"则显示并聚焦手动输入框，选其它值则隐藏
+    document.getElementById('aiModel').addEventListener('change', function() {
+        var customInput = document.getElementById('aiModelCustom');
+        if (this.value === '__custom__') {
+            customInput.style.display = 'block';
+            customInput.focus();
+        } else {
+            customInput.style.display = 'none';
+        }
+    });
+
+    // 清空模型下拉框中动态加载的模型选项，仅保留"请选择模型"和"手动输入"两个固定选项
+    function resetAiModelOptions() {
+        var select = document.getElementById('aiModel');
+        while (select.options.length > 2) {
+            select.remove(select.options.length - 1);
+        }
+        return select;
+    }
+
+    // 填充 AI 模型下拉框：已保存模型不在选项中时，选中"手动输入"并把模型回填到手动输入框
+    function fillAiModelSelect(modelName) {
+        var select = document.getElementById('aiModel');
+        var customInput = document.getElementById('aiModelCustom');
+        if (!modelName) {
+            select.value = '';
+            customInput.value = '';
+            customInput.style.display = 'none';
+            return;
+        }
+        var found = false;
+        for (var i = 0; i < select.options.length; i++) {
+            if (select.options[i].value === modelName) {
+                select.selectedIndex = i;
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            customInput.style.display = 'none';
+        } else {
+            select.value = '__custom__';
+            customInput.value = modelName;
+            customInput.style.display = 'block';
+        }
+    }
+
+    // 获取模型列表并填充到下拉框（读取表单当前的 Key 和地址，可为空由后端回退）
+    function loadAiModels() {
+        var apiKey = document.getElementById('aiApiKey').value.trim();
+        var baseUrl = document.getElementById('aiApiUrl').value.trim();
+        apiPost('/api/ai/models', { api_key: apiKey, base_url: baseUrl }).then(function(res) {
+            if (!res.ok) {
+                showToast(res.message || '获取模型列表失败', 'error');
+                return;
+            }
+            var models = res.models || [];
+            var current = getModelValue(); // 记录当前模型，填充后回填
+            var select = resetAiModelOptions();
+            models.forEach(function(m) {
+                var opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name ? (m.id + '（' + m.name + '）') : m.id;
+                select.appendChild(opt);
+            });
+            // 当前模型在列表中则选中，否则选中"手动输入"并回填
+            var found = false;
+            for (var i = 2; i < select.options.length; i++) {
+                if (select.options[i].value === current) {
+                    select.selectedIndex = i;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                select.value = '__custom__';
+                document.getElementById('aiModelCustom').value = current;
+                document.getElementById('aiModelCustom').style.display = 'block';
+            }
+            showToast('获取模型列表成功，共 ' + models.length + ' 个模型', 'success');
+        }).catch(function(err) {
+            showToast('获取模型列表失败: ' + err.message, 'error');
+        });
+    }
+
+    // 测试 AI 接口连通性，结果内联展示在按钮下方
+    function testAiConnection() {
+        var apiKey = document.getElementById('aiApiKey').value.trim();
+        var model = getModelValue();
+        var baseUrl = document.getElementById('aiApiUrl').value.trim();
+        var resultEl = document.getElementById('aiTestResult');
+        resultEl.innerHTML = '<span style="color:#94a3b8;">测试中...</span>';
+        apiPost('/api/ai/test-connection', { api_key: apiKey, model: model, base_url: baseUrl }).then(function(res) {
+            if (res.ok) {
+                var parts = [];
+                if (res.status !== undefined && res.status !== null) parts.push('HTTP ' + res.status);
+                if (res.latency_ms !== undefined && res.latency_ms !== null) parts.push('耗时 ' + res.latency_ms + ' ms');
+                resultEl.innerHTML = '<span style="color:#16a34a;">✓ 连接成功' + (parts.length ? '（' + parts.join('，') + '）' : '') + '</span>';
+            } else {
+                var msg = '✗ ' + (res.message || '连接失败');
+                if (res.latency_ms !== undefined && res.latency_ms !== null) {
+                    msg += '（耗时 ' + res.latency_ms + ' ms）';
+                }
+                resultEl.innerHTML = '<span style="color:#dc2626;">' + escapeHtml(msg) + '</span>';
+            }
+        }).catch(function(err) {
+            resultEl.innerHTML = '<span style="color:#dc2626;">✗ ' + escapeHtml(err.message || '请求失败') + '</span>';
+        });
+    }
 
     /* ===== OTA 环境管理 ===== */
 
@@ -159,17 +295,18 @@
         var html = '<table class="env-table" style="width:100%; border-collapse:collapse;">';
         html += '<thead><tr style="background:#f8fafc; text-align:left;">';
         html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">名称</th>';
+        html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">区域</th>';
         html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">OTA 地址</th>';
         html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">Token</th>';
-        html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0;">排序</th>';
         html += '<th style="padding:10px; border-bottom:2px solid #e2e8f0; text-align:right;">操作</th>';
         html += '</tr></thead><tbody>';
         envs.forEach(function(env) {
+            var regionText = env.region === 'os' ? '<span class="tag" style="background:#e0e7ff; color:#4338ca;">国外</span>' : '<span class="tag" style="background:#dcfce7; color:#15803d;">国内</span>';
             html += '<tr style="border-bottom:1px solid #f1f5f9;">';
             html += '<td style="padding:10px;"><strong>' + escapeHtml(env.name) + '</strong></td>';
+            html += '<td style="padding:10px;">' + regionText + '</td>';
             html += '<td style="padding:10px; color:#475569; font-size:13px;">' + escapeHtml(maskUrl(env.ota_url)) + '</td>';
             html += '<td style="padding:10px; color:#475569; font-size:13px;">' + escapeHtml(maskToken(env.token)) + '</td>';
-            html += '<td style="padding:10px; color:#475569;">' + env.sort_order + '</td>';
             html += '<td style="padding:10px; text-align:right;">';
             html += '<button class="btn btn-primary btn-sm" onclick="openEnvModal(' + env.id + ')">编辑</button> ';
             html += '<button class="btn btn-danger btn-sm" onclick="deleteEnv(' + env.id + ',\'' + escapeAttr(env.name) + '\')">删除</button>';
@@ -216,17 +353,17 @@
                 if (!env) { showToast('环境不存在', 'error'); return; }
                 document.getElementById('envId').value = env.id;
                 document.getElementById('envName').value = env.name;
+                document.getElementById('envRegion').value = env.region === 'os' ? 'os' : 'cn';
                 document.getElementById('envUrl').value = env.ota_url;
                 document.getElementById('envToken').value = env.token || '';
-                document.getElementById('envSort').value = env.sort_order || 0;
                 title.textContent = '编辑环境：' + env.name;
                 submitBtn.textContent = '保存修改';
-                modal.style.display = 'block';
+                modal.style.display = 'flex';
             });
         } else {
             title.textContent = '新增环境';
             submitBtn.textContent = '创建环境';
-            modal.style.display = 'block';
+            modal.style.display = 'flex';
             setTimeout(function() { document.getElementById('envName').focus(); }, 100);
         }
     }
@@ -239,9 +376,9 @@
         var id = document.getElementById('envId').value;
         var payload = {
             name: document.getElementById('envName').value.trim(),
+            region: document.getElementById('envRegion').value,
             ota_url: document.getElementById('envUrl').value.trim(),
-            token: document.getElementById('envToken').value.trim(),
-            sort_order: parseInt(document.getElementById('envSort').value) || 0
+            token: document.getElementById('envToken').value.trim()
         };
         if (!payload.name || !payload.ota_url) {
             showToast('名称和地址不能为空', 'error');
@@ -273,15 +410,20 @@
     }
 
     function deleteEnv(id, name) {
-        if (!confirm('确定要删除环境"' + name + '"吗？此操作不可撤销。')) return;
-        apiDelete('/api/ota-envs/' + id).then(function(data) {
-            if (data.success) {
-                showToast('环境已删除', 'success');
-                loadEnvList();
-            } else {
-                showToast(data.error || '删除失败', 'error');
-            }
-        }).catch(function(err) { showToast('删除失败: ' + err.message, 'error'); });
+        showConfirmDialog({
+            title: '删除环境',
+            message: '确定要删除环境"' + name + '"吗？此操作不可撤销。'
+        }, function(ok) {
+            if (!ok) return;
+            apiDelete('/api/ota-envs/' + id).then(function(data) {
+                if (data.success) {
+                    showToast('环境已删除', 'success');
+                    loadEnvList();
+                } else {
+                    showToast(data.error || '删除失败', 'error');
+                }
+            }).catch(function(err) { showToast('删除失败: ' + err.message, 'error'); });
+        });
     }
 
     function escapeHtml(str) {

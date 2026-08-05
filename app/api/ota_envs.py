@@ -28,10 +28,14 @@ def create_env():
         return jsonify({'error': '环境名称不能为空'}), 400
     if not ota_url:
         return jsonify({'error': 'OTA URL 不能为空'}), 400
+    # 区域校验（cn=国内 os=国外）
+    region = (data.get('region') or 'cn').strip().lower()
+    if region not in ('cn', 'os'):
+        return jsonify({'error': '区域只能为 cn（国内）或 os（国外）'}), 400
     # 同用户下 name 唯一
     if OtaEnvironment.query.filter_by(user_id=user_id, name=name).first():
         return jsonify({'error': '环境名称已存在'}), 400
-    env = OtaEnvironment(user_id=user_id, name=name, ota_url=ota_url, token=token, sort_order=sort_order)
+    env = OtaEnvironment(user_id=user_id, name=name, ota_url=ota_url, token=token, region=region, sort_order=sort_order)
     db.session.add(env)
     db.session.commit()
     return jsonify({'success': True, 'env': env.to_dict()})
@@ -61,6 +65,11 @@ def update_env(env_id):
         env.ota_url = ota_url
     if 'token' in data:
         env.token = (data['token'] or '').strip()
+    if 'region' in data:
+        region = (data['region'] or 'cn').strip().lower()
+        if region not in ('cn', 'os'):
+            return jsonify({'error': '区域只能为 cn（国内）或 os（国外）'}), 400
+        env.region = region
     if 'sort_order' in data:
         env.sort_order = int(data['sort_order'] or 0)
     env.updated_at = datetime.now()

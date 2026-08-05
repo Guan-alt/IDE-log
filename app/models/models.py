@@ -38,6 +38,7 @@ class Device(db.Model):
     name = db.Column(db.String(100))  # 设备名称
     current_version = db.Column(db.String(50))  # 当前固件版本
     status = db.Column(db.String(20), default='idle')  # 状态: idle/upgrading/success/failed
+    env_id = db.Column(db.Integer, db.ForeignKey('ota_environments.id'), nullable=True)  # 关联OTA环境
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     def to_dict(self):
@@ -47,6 +48,7 @@ class Device(db.Model):
             'name': self.name,
             'current_version': self.current_version,
             'status': self.status,
+            'env_id': self.env_id,
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None
         }
 
@@ -195,6 +197,7 @@ class OtaEnvironment(db.Model):
     name = db.Column(db.String(100), nullable=False)  # 环境名称，如"线下"/"线上"/"预发布"
     ota_url = db.Column(db.String(200), nullable=False)
     token = db.Column(db.String(200), nullable=False, default='')
+    region = db.Column(db.String(10), default='cn')  # 区域: cn=国内 os=国外（查询设备版本方式不同）
     sort_order = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -205,6 +208,7 @@ class OtaEnvironment(db.Model):
             'name': self.name,
             'ota_url': self.ota_url,
             'token': self.token,
+            'region': self.region or 'cn',
             'sort_order': self.sort_order,
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None,
             'updated_at': self.updated_at.strftime('%Y-%m-%d %H:%M:%S') if self.updated_at else None

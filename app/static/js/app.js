@@ -161,6 +161,60 @@ function showToast(message, type) {
     }, 3000);
 }
 
+/* ===================== 确认弹窗（局内） ===================== */
+
+/**
+ * 局内确认弹窗，替代浏览器原生 confirm()
+ * @param {object} options - 配置 { title, message, confirmText, cancelText, danger }
+ * @param {function} callback - 回调 function(ok:boolean)
+ */
+function showConfirmDialog(options, callback) {
+    var opts = options || {};
+    var overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.45); z-index:10000; display:flex; align-items:center; justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'background:#fff; border-radius:10px; width:400px; max-width:90%; padding:22px 24px; box-shadow:0 10px 40px rgba(0,0,0,0.25);';
+    var title = document.createElement('h3');
+    title.textContent = opts.title || '操作确认';
+    title.style.cssText = 'margin:0 0 12px; font-size:15px; font-weight:600; color:#0f172a;';
+    var msg = document.createElement('p');
+    msg.textContent = opts.message || '';
+    msg.style.cssText = 'margin:0 0 20px; font-size:13px; color:#475569; line-height:1.6; word-break:break-all;';
+    var footer = document.createElement('div');
+    footer.style.cssText = 'text-align:right;';
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-secondary';
+    cancelBtn.textContent = opts.cancelText || '取消';
+    cancelBtn.style.marginRight = '8px';
+    var okBtn = document.createElement('button');
+    okBtn.className = 'btn ' + (opts.danger === false ? 'btn-primary' : 'btn-danger');
+    okBtn.textContent = opts.confirmText || '确定';
+    footer.appendChild(cancelBtn);
+    footer.appendChild(okBtn);
+    box.appendChild(title);
+    box.appendChild(msg);
+    box.appendChild(footer);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    function close(confirmed) {
+        if (overlay.parentNode) {
+            overlay.parentNode.removeChild(overlay);
+        }
+        if (typeof callback === 'function') {
+            callback(confirmed);
+        }
+    }
+    okBtn.addEventListener('click', function() { close(true); });
+    cancelBtn.addEventListener('click', function() { close(false); });
+    overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) {
+            close(false);
+        }
+    });
+}
+
 /* ===================== 页面初始化 ===================== */
 
 document.addEventListener('DOMContentLoaded', function() {
