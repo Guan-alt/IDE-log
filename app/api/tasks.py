@@ -66,7 +66,7 @@ def end_task(task_id):
 @tasks_bp.route('/<int:task_id>', methods=['DELETE'])
 @login_required
 def delete_task(task_id):
-    """删除测试任务（仅当无关联OTA记录时允许）"""
+    """删除测试任务，关联的OTA记录解除关联（task_id 置为 NULL）"""
     from app.models.models import OtaRecord
     from sqlalchemy import func
 
@@ -79,8 +79,10 @@ def delete_task(task_id):
         OtaRecord.task_id == task_id
     ).scalar() or 0
     if record_count > 0:
-        return jsonify({'error': '该任务已关联OTA记录，无法删除（请先删除关联记录或结束任务）'}), 400
+        db.session.query(OtaRecord).filter(
+            OtaRecord.task_id == task_id
+        ).update({OtaRecord.task_id: None}, synchronize_session=False)
 
     db.session.delete(task)
     db.session.commit()
-    return jsonify({'success': True, 'message': '任务已删除'})
+    return jsonify({'success': True, 'message': '任务已删除，{}条OTA记录已解除关联'.format(record_count)})

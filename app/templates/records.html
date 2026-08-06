@@ -85,7 +85,7 @@
     var currentTotalPages = 1;
 
     // 页面加载初始化
-    document.addEventListener('DOMContentLoaded', function() {
+    (function() {
         loadDeviceFilter();
         loadTaskFilter();
         loadRecords();
@@ -112,7 +112,7 @@
                 updateBatchButton();
             }
         });
-    });
+    })();
 
     // 筛选条件变化时自动查询（回到第一页）
     document.getElementById('filterDevice').addEventListener('change', function() { currentPage = 1; loadRecords(); });
@@ -421,6 +421,9 @@
         return html;
     }
 
+    var currentChatRecordId = null;
+    var aiChatHistory = [];
+
     // 查看 AI 分析报告
     function viewReport(recordId) {
         apiGet('/api/ai/report/' + recordId).then(function(data) {
@@ -445,10 +448,83 @@
             html += '<div class="report-section"><h4>AI 分析报告</h4><div class="md-content">' +
                     renderMarkdown(aiText) + '</div></div>';
 
+            // 追问对话区
+            html += '<div style="border-top:1px solid #e2e8f0; margin-top:16px; padding-top:16px;">';
+            html += '<h4>追问对话</h4>';
+            html += '<div id="aiChatMessages" style="max-height:240px; overflow-y:auto; margin-bottom:12px;"></div>';
+            html += '<div style="display:flex; gap:8px;">';
+            html += '<input type="text" id="aiChatInput" class="form-control" placeholder="基于这份日志和分析继续提问..." style="flex:1;" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();sendAiChat();}">';
+            html += '<button class="btn btn-primary" id="aiChatSendBtn" onclick="sendAiChat()">发送</button>';
+            html += '</div></div>';
+
             document.getElementById('reportModalBody').innerHTML = html;
+            currentChatRecordId = recordId;
+            // 从 localStorage 恢复对话历史
+            aiChatHistory = [];
+            var chatBox = document.getElementById('aiChatMessages');
+            if (chatBox) {
+                try {
+                    var saved = JSON.parse(localStorage.getItem('ai_chat_' + recordId) || '[]');
+                    aiChatHistory = saved;
+                    saved.forEach(function(msg) {
+                        var msgDiv = document.createElement('div');
+                        if (msg.role === 'user') {
+                            msgDiv.style.cssText = 'text-align:right; margin-bottom:8px;';
+                            msgDiv.innerHTML = '<span style="background:#3b82f6; color:#fff; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;">' + escapeHtml(msg.content) + '</span>';
+                        } else {
+                            msgDiv.style.cssText = 'margin-bottom:8px;';
+                            msgDiv.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word; white-space:pre-wrap;">' + escapeHtml(msg.content) + '</span>';
+                        }
+                        chatBox.appendChild(msgDiv);
+                    });
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                } catch(e) {}
+            }
             showModal('reportModal');
         }).catch(function(err) {
             showToast('获取报告失败: ' + err.message, 'error');
+        });
+    }
+
+    function sendAiChat() {
+        if (!currentChatRecordId) return;
+        var input = document.getElementById('aiChatInput');
+        if (!input) return;
+        var question = input.value.trim();
+        if (!question) return;
+        input.value = '';
+        var btn = document.getElementById('aiChatSendBtn');
+        btn.disabled = true;
+        btn.textContent = '思考中...';
+
+        var chatBox = document.getElementById('aiChatMessages');
+        var userMsg = document.createElement('div');
+        userMsg.style.cssText = 'text-align:right; margin-bottom:8px;';
+        userMsg.innerHTML = '<span style="background:#3b82f6; color:#fff; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;">' + escapeHtml(question) + '</span>';
+        chatBox.appendChild(userMsg);
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+        apiPost('/api/ai/chat/' + currentChatRecordId, {question: question, history: aiChatHistory}).then(function(data) {
+            var reply = data.reply || data.error || '(无回复)';
+            aiChatHistory.push({role: 'user', content: question});
+            aiChatHistory.push({role: 'assistant', content: reply});
+            // 持久化对话历史
+            try { localStorage.setItem('ai_chat_' + currentChatRecordId, JSON.stringify(aiChatHistory)); } catch(e) {}
+
+            var aiMsg = document.createElement('div');
+            aiMsg.style.cssText = 'margin-bottom:8px;';
+            aiMsg.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word; white-space:pre-wrap;">' + escapeHtml(reply) + '</span>';
+            chatBox.appendChild(aiMsg);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }).catch(function(err) {
+            var errMsg = document.createElement('div');
+            errMsg.style.cssText = 'margin-bottom:8px;';
+            errMsg.innerHTML = '<span style="background:#fee2e2; color:#dc2626; padding:6px 12px; border-radius:8px; display:inline-block;">发送失败: ' + escapeHtml(err.message || '') + '</span>';
+            chatBox.appendChild(errMsg);
+        }).finally(function() {
+            btn.disabled = false;
+            btn.textContent = '发送';
+            if (input) input.focus();
         });
     }
 

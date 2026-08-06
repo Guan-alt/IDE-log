@@ -3,7 +3,10 @@
 {% block title %}设备管理 - IDE 升级测试系统{% endblock %}
 
 {% block content %}
-<h1 class="page-title">设备管理</h1>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+    <h1 class="page-title">设备管理</h1>
+    <button class="btn btn-secondary btn-sm" onclick="loadDevices(true)">刷新版本</button>
+</div>
 
 <!-- 添加设备表单 -->
 <div class="card">
@@ -68,11 +71,12 @@
     /* ===== 设备管理页面逻辑 ===== */
 
     // 页面加载时获取设备列表
-    document.addEventListener('DOMContentLoaded', loadDevices);
+    (function() { loadDevices(); })();
 
     // 加载设备列表
-    function loadDevices() {
-        apiGet('/api/devices').then(function(data) {
+    function loadDevices(refresh) {
+        var url = '/api/devices' + (refresh ? '?refresh=1' : '');
+        apiGet(url).then(function(data) {
             var list = data.devices || data || [];
             renderDeviceTable(list);
         }).catch(function(err) {

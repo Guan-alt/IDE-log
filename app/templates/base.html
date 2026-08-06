@@ -13,12 +13,12 @@
             <span class="brand-text">OTA测试平台</span>
         </div>
         <ul class="nav-menu">
-            <li class="nav-item"><a href="/devices" class="nav-link">设备管理</a></li>
-            <li class="nav-item"><a href="/monitor" class="nav-link">实时监控</a></li>
-            <li class="nav-item"><a href="/tasks" class="nav-link">测试任务</a></li>
-            <li class="nav-item"><a href="/records" class="nav-link">历史记录</a></li>
-            <li class="nav-item"><a href="/stats" class="nav-link">统计看板</a></li>
-            <li class="nav-item"><a href="/settings" class="nav-link">设置</a></li>
+            <li class="nav-item"><a data-path="/devices" class="nav-link" onclick="navigateTo('/devices'); return false;">设备管理</a></li>
+            <li class="nav-item"><a data-path="/monitor" class="nav-link" onclick="navigateTo('/monitor'); return false;">实时监控</a></li>
+            <li class="nav-item"><a data-path="/tasks" class="nav-link" onclick="navigateTo('/tasks'); return false;">测试任务</a></li>
+            <li class="nav-item"><a data-path="/records" class="nav-link" onclick="navigateTo('/records'); return false;">历史记录</a></li>
+            <li class="nav-item"><a data-path="/stats" class="nav-link" onclick="navigateTo('/stats'); return false;">统计看板</a></li>
+            <li class="nav-item"><a data-path="/settings" class="nav-link" onclick="navigateTo('/settings'); return false;">设置</a></li>
         </ul>
     </aside>
 

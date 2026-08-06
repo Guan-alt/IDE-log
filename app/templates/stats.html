@@ -121,7 +121,7 @@
     var currentTrendDays = 7;
 
     // 页面加载时初始化
-    document.addEventListener('DOMContentLoaded', function() {
+    (function() {
         loadDeviceOptions();
         loadTaskOptions();
         // 设备选择变化时自动刷新
@@ -134,7 +134,7 @@
         });
         // 加载全部仪表盘数据（默认全部）
         loadDashboard();
-    });
+    })();
 
     /* ---------- 任务选项 ---------- */
     function loadTaskOptions() {

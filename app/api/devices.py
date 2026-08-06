@@ -39,24 +39,23 @@ def _env_name(env_id):
 def get_devices():
     uid = get_current_user_id()
     devices = Device.query.filter_by(user_id=uid).all()
-    # 设备默认环境（第一个环境），用于无关联环境的设备刷新版本
-    default_client = get_ota_client(user_id=uid)
+    refresh = request.args.get('refresh', '0') == '1'
     result = []
     for d in devices:
-        # 尚未关联环境的设备，自动探测归属环境
-        if not d.env_id:
-            detected = detect_device_env(d.sn, uid)
-            if detected:
-                d.env_id = detected
-        # 使用设备关联的环境（若有）刷新设备版本，否则使用默认环境
-        if d.env_id:
-            env = OtaEnvironment.query.get(d.env_id)
-            client = OtaClient(env.ota_url, env.token, 10, region=env.region or 'cn') if env else default_client
-        else:
-            client = default_client
-        info = client.get_device_info(d.sn)
-        if info:
-            d.current_version = info.get('version', '') or d.current_version
+        # 仅在明确刷新时才调用OTA服务获取最新版本，否则直接用数据库缓存的版本
+        if refresh:
+            if not d.env_id:
+                detected = detect_device_env(d.sn, uid)
+                if detected:
+                    d.env_id = detected
+            if d.env_id:
+                env = OtaEnvironment.query.get(d.env_id)
+                client = OtaClient(env.ota_url, env.token, 10, region=env.region or 'cn') if env else get_ota_client(user_id=uid)
+            else:
+                client = get_ota_client(user_id=uid)
+            info = client.get_device_info(d.sn)
+            if info:
+                d.current_version = info.get('version', '') or d.current_version
         # 清理历史遗留的在线/离线状态值
         if d.status in ('在线', '离线'):
             d.status = 'idle'
@@ -64,7 +63,8 @@ def get_devices():
         item.pop('status', None)
         item['env_name'] = _env_name(d.env_id)
         result.append(item)
-    db.session.commit()
+    if refresh:
+        db.session.commit()
     return jsonify(result)
 
 @devices_bp.route('', methods=['POST'])

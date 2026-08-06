@@ -177,6 +177,14 @@ class AIAnalyzer:
             return "分析失败：无关联的日志文件"
 
         # 读取所有日志文件
+        log_contents = self._read_log_files(log_paths)
+        if not log_contents:
+            return "分析失败：所有关联的日志文件均不存在或为空"
+
+        return self.analyze_logs(log_contents)
+
+    def _read_log_files(self, log_paths):
+        """读取日志文件列表，返回 [{'name': ..., 'content': ...}]"""
         log_contents = []
         for path in log_paths:
             if not isinstance(path, str):
@@ -185,19 +193,87 @@ class AIAnalyzer:
                 try:
                     with open(path, 'r', encoding='utf-8', errors='replace') as f:
                         content = f.read()
-                    # 从文件名提取日志源名称
-                    basename = os.path.basename(path)
-                    name = basename.replace('.log', '')
-                    log_contents.append({'name': name, 'content': content})
+                    basename = os.path.basename(path).replace('.log', '')
+                    log_contents.append({'name': basename, 'content': content})
                 except Exception as e:
                     logger.error(f"读取日志文件 {path} 失败: {e}")
             else:
                 logger.warning(f"日志文件不存在: {path}")
+        return log_contents
 
-        if not log_contents:
-            return "分析失败：所有关联的日志文件均不存在或为空"
+    def build_chat_context(self, record):
+        """
+        构建对话上下文：日志内容 + AI分析报告
+        """
+        context = ""
+        # 添加AI分析报告
+        if record.ai_analysis:
+            context += f"=== AI分析报告 ===\n{record.ai_analysis}\n\n"
+        # 添加日志内容
+        if record.log_paths:
+            try:
+                log_paths = json.loads(record.log_paths)
+            except (json.JSONDecodeError, TypeError):
+                log_paths = [record.log_paths] if record.log_paths else []
+            log_contents = self._read_log_files(log_paths)
+            for log in log_contents:
+                content = log.get('content', '')
+                if len(content) > 5000:
+                    content = "...(日志过长，仅显示末尾部分)...\n" + content[-5000:]
+                context += f"=== 日志源: {log.get('name', '未知')} ===\n{content}\n\n"
+        # 添加记录基本信息
+        context += f"=== 记录基本信息 ===\n"
+        context += f"设备SN: {record.device_sn or '未知'}\n"
+        context += f"升级结果: {record.result or '未知'}\n"
+        context += f"来源版本: {record.source_version or '未知'}\n"
+        context += f"目标版本: {record.target_version or '未知'}\n"
+        if record.fail_reason:
+            context += f"失败原因: {record.fail_reason}\n"
+        return context
 
-        return self.analyze_logs(log_contents)
+    def chat(self, messages):
+        """
+        通用对话接口（支持多轮对话）
+        Args:
+            messages: list of {role, content}
+        Returns:
+            str: AI回复文本
+        """
+        if not self.api_key:
+            return "AI API Key 未配置"
+
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 2000
+        }
+
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            response.raise_for_status()
+            try:
+                data = response.json()
+                result = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            except ValueError:
+                is_sse, result = _parse_sse_content(response.content.decode('utf-8', errors='replace'))
+                if not is_sse:
+                    raise
+            if result:
+                return result
+            return "AI返回内容为空"
+        except requests.exceptions.Timeout:
+            return "对话失败：AI接口调用超时（60秒）"
+        except requests.exceptions.ConnectionError as e:
+            return f"对话失败：无法连接AI服务 - {e}"
+        except Exception as e:
+            logger.error(f"AI对话失败: {e}")
+            return f"对话失败：{e}"
 
     def analyze_batch(self, records):
         """

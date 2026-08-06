@@ -86,6 +86,47 @@ def batch_report():
     })
 
 
+@ai_bp.route('/chat/<int:record_id>', methods=['POST'])
+@login_required
+def chat_with_ai(record_id):
+    """基于OTA记录的日志和AI分析报告进行追问对话"""
+    data = request.get_json() or {}
+    question = (data.get('question') or '').strip()
+    history = data.get('history', [])
+
+    if not question:
+        return jsonify({'error': '请输入问题'}), 400
+
+    record = OtaRecord.query.filter_by(id=record_id, user_id=get_current_user_id()).first()
+    if not record:
+        return jsonify({'error': '记录不存在或无权访问'}), 404
+
+    setting = Setting.query.filter_by(user_id=get_current_user_id()).first()
+    if not setting or not setting.ai_api_key:
+        return jsonify({'error': 'AI服务未配置，请先在设置页配置AI API Key'}), 400
+
+    analyzer = AIAnalyzer(setting.ai_api_key, setting.ai_model, setting.ai_base_url)
+    context = analyzer.build_chat_context(record)
+
+    messages = [
+        {"role": "system", "content":
+            "你是一位固件OTA升级分析专家。用户正在就某次OTA升级的日志和AI分析报告进行追问。"
+            "请基于以下上下文内容回答用户的问题。如果上下文中没有相关信息，请如实说明。\n\n" + context}
+    ]
+    # 添加对话历史（最多保留最近10轮）
+    recent_history = history[-20:] if len(history) > 20 else history
+    for h in recent_history:
+        role = h.get('role', 'user')
+        content = h.get('content', '')
+        if role in ('user', 'assistant') and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": question})
+
+    reply = analyzer.chat(messages)
+    logger.info(f"记录 {record_id} AI对话完成，问题长度={len(question)}")
+    return jsonify({'reply': reply})
+
+
 @ai_bp.route('/test-connection', methods=['POST'])
 @login_required
 def test_connection():

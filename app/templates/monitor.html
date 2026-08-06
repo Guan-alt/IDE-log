@@ -3,7 +3,10 @@
 {% block title %}实时监控 - OTA监控测试平台{% endblock %}
 
 {% block content %}
-<h1 class="page-title">实时监控</h1>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+    <h1 class="page-title">实时监控</h1>
+    <button class="btn btn-secondary btn-sm" onclick="refreshCurrentPage()">刷新</button>
+</div>
 
 <!-- OTA 升级 + 升级进度 -->
 <div class="monitor-top-row">
@@ -33,9 +36,12 @@
                 </div>
                 <div class="form-group">
                     <label for="otaTaskSelect">当前任务（必选）</label>
-                    <select id="otaTaskSelect" class="form-control">
-                        <option value="">无任务</option>
-                    </select>
+                    <div style="display:flex; gap:6px;">
+                        <select id="otaTaskSelect" class="form-control" style="flex:1;">
+                            <option value="">无任务</option>
+                        </select>
+                        <button type="button" class="btn btn-success" onclick="openQuickCreateTask()" style="flex:0 0 auto; white-space:nowrap;" title="新建任务">+ 新建</button>
+                    </div>
                 </div>
             </div>
 
@@ -273,12 +279,19 @@
 
 <!-- AI分析结果弹窗 -->
 <div id="aiAnalysisModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999;">
-    <div style="background:#fff; margin:5% auto; padding:24px; border-radius:8px; max-width:800px; width:90%; max-height:80vh; overflow-y:auto;">
+    <div style="background:#fff; margin:3% auto; padding:24px; border-radius:8px; max-width:800px; width:90%; max-height:90vh; display:flex; flex-direction:column;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
             <h2 style="margin:0;">AI OTA失败分析报告</h2>
             <button class="btn btn-secondary" onclick="document.getElementById('aiAnalysisModal').style.display='none'">关闭</button>
         </div>
-        <div id="aiAnalysisContent" style="white-space:pre-wrap; font-size:14px; line-height:1.8; color:#333;"></div>
+        <div id="aiAnalysisContent" style="white-space:pre-wrap; font-size:14px; line-height:1.8; color:#333; flex:1; overflow-y:auto; min-height:120px;"></div>
+        <div style="border-top:1px solid #e2e8f0; margin-top:16px; padding-top:16px;">
+            <div id="aiChatMessages" style="max-height:200px; overflow-y:auto; margin-bottom:12px;"></div>
+            <div style="display:flex; gap:8px;">
+                <input type="text" id="aiChatInput" class="form-control" placeholder="基于这份日志和分析继续提问..." style="flex:1;" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAiChat();}">
+                <button class="btn btn-primary" id="aiChatSendBtn" onclick="sendAiChat()">发送</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -291,6 +304,30 @@
         </div>
         <div id="testLogStatus" style="padding:10px; font-size:14px; color:#475569;">正在测试采集...</div>
         <div id="testLogContent" style="background:#1e293b; color:#e2e8f0; padding:14px; border-radius:6px; font-family:monospace; font-size:13px; white-space:pre-wrap; max-height:400px; overflow-y:auto; margin-top:12px;"></div>
+    </div>
+</div>
+
+<!-- 快捷新建任务弹窗 -->
+<div id="quickTaskModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999;">
+    <div style="background:#fff; margin:8% auto; padding:24px; border-radius:8px; max-width:480px; width:90%;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h2 style="margin:0;">新建测试任务</h2>
+            <button class="btn btn-secondary" onclick="closeQuickCreateTask()">&times;</button>
+        </div>
+        <form onsubmit="event.preventDefault(); submitQuickCreateTask();">
+            <div class="form-group">
+                <label for="quickTaskName">任务名称 <span style="color:#dc2626;">*</span></label>
+                <input type="text" id="quickTaskName" class="form-control" placeholder="如：v1.0.5回归测试" required maxlength="200" autocomplete="off">
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label for="quickTaskDesc">任务描述</label>
+                <textarea id="quickTaskDesc" class="form-control" rows="3" placeholder="选填" style="resize:vertical; min-height:70px;"></textarea>
+            </div>
+            <div style="margin-top:16px; text-align:right;">
+                <button type="button" class="btn btn-secondary" onclick="closeQuickCreateTask()" style="margin-right:8px;">取消</button>
+                <button type="submit" class="btn btn-primary" id="quickTaskSubmitBtn">创建任务</button>
+            </div>
+        </form>
     </div>
 </div>
 {% endblock %}
@@ -309,13 +346,22 @@
     /* ===== 实时监控页面逻辑 ===== */
 
     var progressTimer = null;
+    var lastProgressRid = null;
     var logTimer = null;
+    var cycleStatusTimer = null;
     var currentLogConfigs = [];
     var currentOtaSn = null;
-    var currentOtaMode = 'single';  // 'single' | 'cycle'
+    var currentOtaMode = 'single';
+
+    // 页面清理函数（切换页面时清除定时器）
+    pageCleanupFn = function() {
+        if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+        if (logTimer) { clearInterval(logTimer); logTimer = null; }
+        if (cycleStatusTimer) { clearInterval(cycleStatusTimer); cycleStatusTimer = null; }
+    };
 
     // 页面加载初始化
-    document.addEventListener('DOMContentLoaded', function() {
+    (function() {
         restoreOtaMode();
         loadOtaEnvs();
         loadSerialPorts();
@@ -325,12 +371,11 @@
         startLogPolling();
         refreshCollectorStatus();
         loadOtaTasks();
-        // 先加载设备列表，完成后恢复OTA状态
         loadDevicesForOta().then(function() {
             loadDevicesForConfig();
             restoreOtaState();
         });
-    });
+    })();
 
     /* ===== 测试任务下拉 ===== */
     function loadOtaTasks() {
@@ -361,6 +406,49 @@
         if (this.value) localStorage.setItem('ota_task_id', this.value);
         else localStorage.removeItem('ota_task_id');
     });
+
+    /* ===== 快捷新建任务 ===== */
+    function openQuickCreateTask() {
+        document.getElementById('quickTaskName').value = '';
+        document.getElementById('quickTaskDesc').value = '';
+        document.getElementById('quickTaskModal').style.display = 'block';
+        setTimeout(function() { document.getElementById('quickTaskName').focus(); }, 100);
+    }
+
+    function closeQuickCreateTask() {
+        document.getElementById('quickTaskModal').style.display = 'none';
+    }
+
+    function submitQuickCreateTask() {
+        var name = document.getElementById('quickTaskName').value.trim();
+        var desc = document.getElementById('quickTaskDesc').value.trim();
+        if (!name) { showToast('请输入任务名称', 'error'); return; }
+        var btn = document.getElementById('quickTaskSubmitBtn');
+        btn.disabled = true;
+        btn.textContent = '创建中...';
+        apiPost('/api/tasks', { name: name, description: desc }).then(function(data) {
+            if (data.success) {
+                showToast('任务创建成功', 'success');
+                closeQuickCreateTask();
+                // 刷新任务列表并选中新创建的任务
+                loadOtaTasks().then(function() {
+                    var select = document.getElementById('otaTaskSelect');
+                    var newId = data.task ? String(data.task.id) : null;
+                    if (newId) {
+                        select.value = newId;
+                    }
+                    localStorage.setItem('ota_task_id', select.value);
+                });
+            } else {
+                showToast(data.error || '创建失败', 'error');
+            }
+        }).catch(function(err) {
+            showToast('创建失败: ' + err.message, 'error');
+        }).finally(function() {
+            btn.disabled = false;
+            btn.textContent = '创建任务';
+        });
+    }
 
     /* ===== OTA 模式切换 ===== */
 
@@ -780,18 +868,11 @@
 
     function checkCycleAiAnalysis(data) {
         if (!data.records || data.records.length === 0) return;
-        // 检查最后几条记录是否有AI分析结果
-        var lastRecords = data.records.slice(-3);
-        var checkPromises = lastRecords.map(function(rid) {
-            return apiGet('/api/records/' + rid).then(function(rec) {
-                return rec.ai_analysis;
-            }).catch(function() { return null; });
-        });
         // 简化：延迟3秒后查询AI分析（后台异步生成）
         setTimeout(function() {
             apiGet('/api/ota/progress/' + currentOtaSn).then(function(progData) {
                 if (progData.ai_analysis) {
-                    showAIAnalysis(progData.ai_analysis);
+                    showAIAnalysis(progData.ai_analysis, progData.record_id);
                 }
             }).catch(function() {});
         }, 3000);
@@ -802,8 +883,6 @@
         fetchProgress(sn);
         progressTimer = setInterval(function() { fetchProgress(sn); }, 5000);
     }
-
-    var cycleStatusTimer = null;
 
     function startCycleStatusPolling(sn) {
         if (cycleStatusTimer) clearInterval(cycleStatusTimer);
@@ -841,6 +920,16 @@
             var errno = data.upgrade_errno || 0;
             var isFinished = data.is_finished || false;
 
+            // 检测record_id变化：循环OTA中新轮次开始（新记录），重置进度条
+            var newRid = data.record_id;
+            if (newRid && newRid !== lastProgressRid) {
+                lastProgressRid = newRid;
+                updateProgress('downloadBar', 0);
+                updateProgress('upgradeBar', 0);
+                document.getElementById('downloadPctText').textContent = '0.0%';
+                document.getElementById('upgradePctText').textContent = '0.0%';
+            }
+
             updateProgress('downloadBar', downloadPct);
             updateProgress('upgradeBar', upgradePct);
             document.getElementById('downloadPctText').textContent = downloadPct.toFixed(1) + '%';
@@ -873,7 +962,7 @@
                     updateProgress('upgradeBar', upgradePct, 'fail');
                     showToast(stateText, 'error');
                     if (data.ai_analysis) {
-                        showAIAnalysis(data.ai_analysis);
+                        showAIAnalysis(data.ai_analysis, data.record_id);
                     }
                 }
                 // 单次模式完成
@@ -881,6 +970,10 @@
                     localStorage.removeItem('ota_active');
                     clearInterval(progressTimer); progressTimer = null;
                     cleanupOtaUI();
+                }
+                // 循环模式：本次成功后提示等待下一轮，进度条不重置（保持100%直到新OTA开始）
+                if (localStorage.getItem('ota_cycle_active')) {
+                    document.getElementById('progressStatus').textContent = '本轮成功，等待 30~60 秒后自动开始下一轮...';
                 }
             }
         }).catch(function() {});
@@ -914,11 +1007,84 @@
         localStorage.removeItem('ota_active');
     }
 
-    function showAIAnalysis(analysisText) {
+    var currentAiRecordId = null;
+    var aiChatHistory = [];
+
+    function showAIAnalysis(analysisText, recordId) {
         var modal = document.getElementById('aiAnalysisModal');
         var content = document.getElementById('aiAnalysisContent');
         content.textContent = analysisText;
+        currentAiRecordId = recordId || null;
+        // 从 localStorage 恢复对话历史
+        aiChatHistory = [];
+        var chatBox = document.getElementById('aiChatMessages');
+        chatBox.innerHTML = '';
+        if (currentAiRecordId) {
+            try {
+                var saved = JSON.parse(localStorage.getItem('ai_chat_' + currentAiRecordId) || '[]');
+                aiChatHistory = saved;
+                // 恢复聊天UI
+                saved.forEach(function(msg) {
+                    var msgDiv = document.createElement('div');
+                    if (msg.role === 'user') {
+                        msgDiv.style.cssText = 'text-align:right; margin-bottom:8px;';
+                        msgDiv.innerHTML = '<span style="background:#3b82f6; color:#fff; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;">' + escapeHtml(msg.content) + '</span>';
+                    } else {
+                        msgDiv.style.cssText = 'margin-bottom:8px;';
+                        msgDiv.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word; white-space:pre-wrap;">' + escapeHtml(msg.content) + '</span>';
+                    }
+                    chatBox.appendChild(msgDiv);
+                });
+                chatBox.scrollTop = chatBox.scrollHeight;
+            } catch(e) {}
+        }
+        document.getElementById('aiChatInput').value = '';
         modal.style.display = 'block';
+    }
+
+    function sendAiChat() {
+        if (!currentAiRecordId) {
+            showToast('无法确定关联记录', 'error');
+            return;
+        }
+        var input = document.getElementById('aiChatInput');
+        var question = input.value.trim();
+        if (!question) return;
+        input.value = '';
+        var btn = document.getElementById('aiChatSendBtn');
+        btn.disabled = true;
+        btn.textContent = '思考中...';
+
+        // 追加用户消息
+        var chatBox = document.getElementById('aiChatMessages');
+        var userMsg = document.createElement('div');
+        userMsg.style.cssText = 'text-align:right; margin-bottom:8px;';
+        userMsg.innerHTML = '<span style="background:#3b82f6; color:#fff; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;">' + escapeHtml(question) + '</span>';
+        chatBox.appendChild(userMsg);
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+        apiPost('/api/ai/chat/' + currentAiRecordId, {question: question, history: aiChatHistory}).then(function(data) {
+            var reply = data.reply || data.error || '(无回复)';
+            aiChatHistory.push({role: 'user', content: question});
+            aiChatHistory.push({role: 'assistant', content: reply});
+            // 持久化对话历史
+            try { localStorage.setItem('ai_chat_' + currentAiRecordId, JSON.stringify(aiChatHistory)); } catch(e) {}
+
+            var aiMsg = document.createElement('div');
+            aiMsg.style.cssText = 'margin-bottom:8px;';
+            aiMsg.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word; white-space:pre-wrap;">' + escapeHtml(reply) + '</span>';
+            chatBox.appendChild(aiMsg);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }).catch(function(err) {
+            var errMsg = document.createElement('div');
+            errMsg.style.cssText = 'margin-bottom:8px;';
+            errMsg.innerHTML = '<span style="background:#fee2e2; color:#dc2626; padding:6px 12px; border-radius:8px; display:inline-block;">发送失败: ' + escapeHtml(err.message || '') + '</span>';
+            chatBox.appendChild(errMsg);
+        }).finally(function() {
+            btn.disabled = false;
+            btn.textContent = '发送';
+            document.getElementById('aiChatInput').focus();
+        });
     }
 
     /* ===== 日志采集配置管理 ===== */

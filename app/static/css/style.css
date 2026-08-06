@@ -410,7 +410,8 @@ body {
     width: 90%;
     max-width: 640px;
     max-height: 80vh;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
     animation: modalIn 0.25s ease;
 }
@@ -432,6 +433,7 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-shrink: 0;
 }
 
 .modal-title {
@@ -459,6 +461,8 @@ body {
     font-size: 14px;
     color: #333;
     line-height: 1.8;
+    flex: 1;
+    overflow-y: auto;
 }
 
 /* ===== 统计卡片网格 ===== */

@@ -135,8 +135,10 @@ class JLinkLogger:
                         f.seek(self._last_pos)
                         content = f.read()
                         if content:
+                            now = datetime.now()
+                            ts = f"[{now.strftime('%Y-%m-%d %H:%M:%S')}.{now.microsecond // 1000:03d}] "
                             with self._lock:
-                                self.buffer.append(content)
+                                self.buffer.append(ts + content)
                                 # 限制缓冲区大小
                                 total = sum(len(s) for s in self.buffer)
                                 while total > 500000:  # 最多500KB

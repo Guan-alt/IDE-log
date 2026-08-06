@@ -3,7 +3,10 @@
 {% block title %}设置 - IDE 升级测试系统{% endblock %}
 
 {% block content %}
-<h1 class="page-title">系统设置</h1>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+    <h1 class="page-title">系统设置</h1>
+    <button class="btn btn-secondary btn-sm" onclick="refreshCurrentPage()">刷新</button>
+</div>
 
 <!-- OTA 环境管理 -->
 <div class="card">
@@ -117,7 +120,7 @@
     /* ===== 设置页面逻辑 ===== */
 
     // 页面加载时获取当前配置
-    document.addEventListener('DOMContentLoaded', loadSettings);
+    (function() { loadSettings(); })();
 
     // 加载配置
     function loadSettings() {
@@ -275,7 +278,7 @@
 
     /* ===== OTA 环境管理 ===== */
 
-    document.addEventListener('DOMContentLoaded', loadEnvList);
+    (function() { loadEnvList(); })();
 
     function loadEnvList() {
         apiGet('/api/ota-envs').then(function(data) {

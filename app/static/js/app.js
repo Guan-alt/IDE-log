@@ -5,9 +5,14 @@
 
 /* ===================== fetch 封装 ===================== */
 
+// 页面代际计数器：切换页面时递增，旧页面的回调自动忽略
+var _pageGen = 0;
+
 // GET 请求封装
 async function apiGet(url) {
+    var gen = _pageGen;
     const res = await fetch(url);
+    if (gen !== _pageGen) return new Promise(function(){}); // 页面已切换，挂起回调
     if (!res.ok) {
         throw new Error('请求失败: ' + res.status);
     }
@@ -16,11 +21,13 @@ async function apiGet(url) {
 
 // POST 请求封装
 async function apiPost(url, data) {
+    var gen = _pageGen;
     const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data || {})
     });
+    if (gen !== _pageGen) return new Promise(function(){});
     if (!res.ok) {
         throw new Error('请求失败: ' + res.status);
     }
@@ -29,9 +36,11 @@ async function apiPost(url, data) {
 
 // DELETE 请求封装
 async function apiDelete(url) {
+    var gen = _pageGen;
     const res = await fetch(url, {
         method: 'DELETE'
     });
+    if (gen !== _pageGen) return new Promise(function(){});
     if (!res.ok) {
         throw new Error('请求失败: ' + res.status);
     }
@@ -40,11 +49,13 @@ async function apiDelete(url) {
 
 // PUT 请求封装
 async function apiPut(url, data) {
+    var gen = _pageGen;
     const res = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data || {})
     });
+    if (gen !== _pageGen) return new Promise(function(){});
     if (!res.ok) {
         throw new Error('请求失败: ' + res.status);
     }
@@ -215,19 +226,192 @@ function showConfirmDialog(options, callback) {
     });
 }
 
+/* ===================== 页面缓存与导航 ===================== */
+
+var pageCache = {};
+var currentPagePath = null;
+var pageCleanupFn = null;
+
+function clearPageResources() {
+    if (typeof pageCleanupFn === 'function') {
+        try { pageCleanupFn(); } catch (e) {}
+        pageCleanupFn = null;
+    }
+    // 递增代际计数器，旧页面的 pending fetch 回调将被自动忽略
+    _pageGen++;
+}
+
+function loadScript(src) {
+    return new Promise(function(resolve, reject) {
+        var script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = function() { reject(new Error('加载失败: ' + src)); };
+        document.head.appendChild(script);
+    });
+}
+
+function isScriptLoaded(src) {
+    var scripts = document.querySelectorAll('script[src]');
+    for (var i = 0; i < scripts.length; i++) {
+        if (scripts[i].getAttribute('src') === src) return true;
+    }
+    return false;
+}
+
+async function navigateTo(path, forceReload) {
+    if (currentPagePath === path && !forceReload) return;
+    // 导航离开前，保存当前页面的 DOM 快照（含已加载的数据）到缓存
+    if (currentPagePath && pageCache[currentPagePath]) {
+        pageCache[currentPagePath].scrollY = window.scrollY;
+        pageCache[currentPagePath].contentHtml = document.querySelector('main.container').innerHTML;
+    }
+    clearPageResources();
+
+    if (!forceReload && pageCache[path]) {
+        restorePage(path);
+        history.pushState({ path: path }, '', path);
+        return;
+    }
+
+    try {
+        var res = await fetch(path);
+        var html = await res.text();
+        var parser = new DOMParser();
+        var doc = parser.parseFromString(html, 'text/html');
+
+        var contentEl = doc.querySelector('main.container');
+        var contentHtml = contentEl ? contentEl.innerHTML : '';
+
+        var scriptCode = '';
+        var scriptSrcs = [];
+        doc.querySelectorAll('script').forEach(function(s) {
+            if (s.hasAttribute('src')) {
+                var src = s.getAttribute('src');
+                if (src.indexOf('app.js') >= 0) return;
+                scriptSrcs.push(src);
+            } else {
+                scriptCode += s.textContent + '\n';
+            }
+        });
+
+        var styleCode = '';
+        doc.querySelectorAll('style').forEach(function(s) {
+            styleCode += s.textContent + '\n';
+        });
+
+        pageCache[path] = {
+            contentHtml: contentHtml,
+            scriptCode: scriptCode,
+            styleCode: styleCode,
+            scriptSrcs: scriptSrcs,
+            scrollY: 0
+        };
+
+        renderPage(path);
+        history.pushState({ path: path }, '', path);
+    } catch (err) {
+        showToast('页面加载失败: ' + err.message, 'error');
+    }
+}
+
+function renderPage(path) {
+    var cached = pageCache[path];
+    if (!cached) return;
+    clearPageResources();
+
+    var container = document.querySelector('main.container');
+    container.innerHTML = cached.contentHtml;
+
+    // 样式
+    var existingStyle = document.getElementById('page-dynamic-style');
+    if (existingStyle) existingStyle.remove();
+    if (cached.styleCode) {
+        var style = document.createElement('style');
+        style.id = 'page-dynamic-style';
+        style.textContent = cached.styleCode;
+        container.appendChild(style);
+    }
+
+    // 模态框绑定（每次渲染都执行）
+    container.querySelectorAll('.modal').forEach(function(modal) {
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) {
+                modal.classList.remove('show');
+            }
+        });
+    });
+
+    // 导航激活 + 滚动位置
+    updateNavActive(path);
+    window.scrollTo(0, cached.scrollY || 0);
+    currentPagePath = path;
+
+    // 执行脚本（重新绑定事件监听器 + 后台刷新数据）
+    var existingScript = document.getElementById('page-dynamic-script');
+    if (existingScript) existingScript.remove();
+
+    var srcPromises = [];
+    if (cached.scriptSrcs && cached.scriptSrcs.length > 0) {
+        cached.scriptSrcs.forEach(function(src) {
+            if (!isScriptLoaded(src)) {
+                srcPromises.push(loadScript(src));
+            }
+        });
+    }
+
+    Promise.all(srcPromises).then(function() {
+        if (cached.scriptCode) {
+            var script = document.createElement('script');
+            script.id = 'page-dynamic-script';
+            script.textContent = cached.scriptCode;
+            container.appendChild(script);
+        }
+    }).catch(function(err) {
+        showToast('脚本加载失败: ' + err.message, 'error');
+    });
+}
+
+function restorePage(path) {
+    var cached = pageCache[path];
+    if (!cached) { navigateTo(path, true); return; }
+    renderPage(path);
+}
+
+function refreshCurrentPage() {
+    if (currentPagePath) {
+        delete pageCache[currentPagePath];
+        navigateTo(currentPagePath, true);
+    }
+}
+
+function updateNavActive(path) {
+    document.querySelectorAll('.nav-link').forEach(function(link) {
+        var href = link.getAttribute('data-path');
+        if (href === path || (href !== '/' && path.indexOf(href) === 0)) {
+            link.classList.add('active');
+        } else {
+            link.classList.remove('active');
+        }
+    });
+}
+
+window.addEventListener('popstate', function(e) {
+    var path = (e.state && e.state.path) || window.location.pathname;
+    if (pageCache[path]) {
+        restorePage(path);
+    } else {
+        navigateTo(path, true);
+    }
+});
+
 /* ===================== 页面初始化 ===================== */
 
 document.addEventListener('DOMContentLoaded', function() {
-    // 根据当前路径设置导航栏激活状态
-    var path = window.location.pathname;
-    document.querySelectorAll('.nav-link').forEach(function(link) {
-        var href = link.getAttribute('href');
-        if (href === path || (href !== '/' && path.indexOf(href) === 0)) {
-            link.classList.add('active');
-        }
-    });
+    currentPagePath = window.location.pathname;
+    history.replaceState({ path: currentPagePath }, '', currentPagePath);
+    updateNavActive(currentPagePath);
 
-    // 点击模态框背景区域关闭模态框
     document.querySelectorAll('.modal').forEach(function(modal) {
         modal.addEventListener('click', function(e) {
             if (e.target === modal) {

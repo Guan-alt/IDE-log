@@ -48,8 +48,10 @@ class SerialLogger:
                 if self.serial_conn.in_waiting > 0:
                     data = self.serial_conn.read(self.serial_conn.in_waiting)
                     text = data.decode('utf-8', errors='replace')
+                    now = datetime.now()
+                    ts = f"[{now.strftime('%Y-%m-%d %H:%M:%S')}.{now.microsecond // 1000:03d}] "
                     with self._lock:
-                        self.buffer.append(text)
+                        self.buffer.append(ts + text)
                 else:
                     time.sleep(0.1)
             except Exception as e:
