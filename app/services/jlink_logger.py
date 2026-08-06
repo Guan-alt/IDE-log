@@ -176,8 +176,9 @@ class JLinkLogger:
                 break
 
     def stop(self):
-        """停止采集"""
+        """停止采集：先终止JLink进程，再等待线程退出"""
         self.is_running = False
+        # 先终止JLink进程，使 _read_stdout_loop 中的 readline 立即返回EOF退出
         if self.process:
             try:
                 self.process.terminate()
@@ -185,12 +186,13 @@ class JLinkLogger:
             except Exception:
                 try:
                     self.process.kill()
+                    self.process.wait(timeout=2)
                 except Exception:
                     pass
         if self.file_thread:
-            self.file_thread.join(timeout=2)
+            self.file_thread.join(timeout=3)
         if self.thread:
-            self.thread.join(timeout=2)
+            self.thread.join(timeout=3)
         logger.info(f"JLink {self.name} 采集已停止")
 
     def get_logs(self):

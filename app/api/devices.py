@@ -11,19 +11,23 @@ devices_bp = Blueprint('devices', __name__, url_prefix='/api/devices')
 
 
 def detect_device_env(sn, user_id):
-    """遍历所有已配置的OTA环境，找到能查到该设备信息的环境并返回其id（找不到返回None）"""
+    """遍历所有已配置的OTA环境，找到能查到该设备信息的环境并返回其id（找不到返回None）。
+    返回: (env_id, token_expired)"""
     envs = OtaEnvironment.query.filter_by(user_id=user_id).order_by(OtaEnvironment.sort_order.asc()).all()
     for env in envs:
         try:
             client = OtaClient(env.ota_url, env.token, timeout=3, region=env.region or 'cn')
             info = client.get_device_info(sn)
+            if info.get('token_expired'):
+                logger.warning(f"探测设备 {sn} 环境 {env.name} 时Token过期")
+                return None, True
             # 能在该环境查到设备（返回了固件版本）即视为设备归属该环境
             if info and info.get('version'):
                 logger.info(f"设备 {sn} 探测到环境: {env.name} (id={env.id})")
-                return env.id
+                return env.id, False
         except Exception as e:
             logger.warning(f"探测设备 {sn} 环境 {env.name} 失败: {e}")
-    return None
+    return None, False
 
 
 def _env_name(env_id):
@@ -40,12 +44,15 @@ def get_devices():
     uid = get_current_user_id()
     devices = Device.query.filter_by(user_id=uid).all()
     refresh = request.args.get('refresh', '0') == '1'
+    token_expired = False
     result = []
     for d in devices:
         # 仅在明确刷新时才调用OTA服务获取最新版本，否则直接用数据库缓存的版本
         if refresh:
             if not d.env_id:
-                detected = detect_device_env(d.sn, uid)
+                detected, det_token_expired = detect_device_env(d.sn, uid)
+                if det_token_expired:
+                    token_expired = True
                 if detected:
                     d.env_id = detected
             if d.env_id:
@@ -54,6 +61,8 @@ def get_devices():
             else:
                 client = get_ota_client(user_id=uid)
             info = client.get_device_info(d.sn)
+            if info.get('token_expired'):
+                token_expired = True
             if info:
                 d.current_version = info.get('version', '') or d.current_version
         # 清理历史遗留的在线/离线状态值
@@ -65,6 +74,8 @@ def get_devices():
         result.append(item)
     if refresh:
         db.session.commit()
+    if token_expired:
+        return jsonify({'error': 'OTA Token已过期，请更新', 'token_expired': True}), 403
     return jsonify(result)
 
 @devices_bp.route('', methods=['POST'])
@@ -80,7 +91,9 @@ def add_device():
         if not OtaEnvironment.query.filter_by(id=env_id, user_id=user_id).first():
             return jsonify({'error': '指定的OTA环境不存在'}), 400
     else:
-        env_id = detect_device_env(data['sn'], user_id)
+        env_id, token_expired = detect_device_env(data['sn'], user_id)
+        if token_expired:
+            return jsonify({'error': 'OTA Token已过期，请更新', 'token_expired': True}), 403
         if not env_id:
             return jsonify({'error': '未找到该设备所属的OTA环境，无法添加'}), 400
     device = Device(sn=data['sn'], name=data.get('name', ''), user_id=user_id, env_id=env_id)
@@ -104,6 +117,8 @@ def probe_device_env():
         return jsonify({'error': '环境不存在'}), 404
     client = OtaClient(env.ota_url, env.token, timeout=3, region=env.region or 'cn')
     info = client.get_device_info(sn)
+    if info.get('token_expired'):
+        return jsonify({'error': 'OTA Token已过期，请更新', 'token_expired': True}), 403
     found = bool(info and info.get('version'))
     return jsonify({
         'env_id': env.id,
@@ -133,7 +148,10 @@ def get_device_version(sn):
         client = OtaClient(env.ota_url, env.token, 10, region=env.region or 'cn') if env else get_ota_client(user_id=user_id)
     else:
         client = get_ota_client(user_id=user_id)
-    version = client.get_version(sn)
+    info = client.get_device_info(sn)
+    if info.get('token_expired'):
+        return jsonify({'error': 'OTA Token已过期，请更新', 'token_expired': True}), 403
+    version = info.get('version', '')
     if version:
         if device:
             device.current_version = version

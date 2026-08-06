@@ -129,8 +129,8 @@
         <div class="card">
             <h2 class="card-title">日志采集</h2>
             <div class="action-group">
-                <button class="btn btn-success btn-sm" onclick="startSelectedCollect()">开始采集</button>
-                <button class="btn btn-danger btn-sm" onclick="stopSelectedCollect()">停止采集</button>
+                <button class="btn btn-success btn-sm" id="btnStartCollect" onclick="startSelectedCollect()">开始采集</button>
+                <button class="btn btn-danger btn-sm" id="btnStopCollect" onclick="stopSelectedCollect()" style="display:none;">停止采集</button>
                 <button class="btn btn-primary btn-sm" onclick="openConfigModal()">添加配置</button>
                 <button class="btn btn-secondary btn-sm" onclick="loadLogConfigs()">刷新</button>
             </div>
@@ -284,7 +284,7 @@
             <h2 style="margin:0;">AI OTA失败分析报告</h2>
             <button class="btn btn-secondary" onclick="document.getElementById('aiAnalysisModal').style.display='none'">关闭</button>
         </div>
-        <div id="aiAnalysisContent" style="white-space:pre-wrap; font-size:14px; line-height:1.8; color:#333; flex:1; overflow-y:auto; min-height:120px;"></div>
+        <div id="aiAnalysisContent" class="md-content" style="font-size:14px; line-height:1.8; color:#475569; flex:1; overflow-y:auto; min-height:120px;"></div>
         <div style="border-top:1px solid #e2e8f0; margin-top:16px; padding-top:16px;">
             <div id="aiChatMessages" style="max-height:200px; overflow-y:auto; margin-bottom:12px;"></div>
             <div style="display:flex; gap:8px;">
@@ -371,9 +371,10 @@
         startLogPolling();
         refreshCollectorStatus();
         loadOtaTasks();
+        // 优先恢复 OTA 状态（不等设备列表加载完，直接用 localStorage 中的 SN 恢复进度轮询）
+        restoreOtaState();
         loadDevicesForOta().then(function() {
             loadDevicesForConfig();
-            restoreOtaState();
         });
     })();
 
@@ -621,7 +622,60 @@
                 sel.innerHTML = '<option value="">加载失败</option>';
             });
         });
+        // 检查该设备是否有正在进行的OTA
+        checkDeviceOtaState(sn);
     });
+
+    // 检查设备OTA状态：有OTA则显示进度，无OTA则显示等待发起
+    function checkDeviceOtaState(sn) {
+        if (!sn) {
+            enterIdleUI();
+            return;
+        }
+        // 如果该设备的OTA进度已经在显示中，不重复查询
+        if (currentOtaSn === sn && progressTimer) {
+            return;
+        }
+        apiGet('/api/ota/check-status/' + sn).then(function(data) {
+            if (data.token_expired) {
+                showTokenExpiredModal();
+                return;
+            }
+            if (data.active) {
+                currentOtaSn = sn;
+                localStorage.setItem('ota_sn', sn);
+                if (data.mode === 'cycle') {
+                    localStorage.setItem('ota_cycle_active', '1');
+                    localStorage.removeItem('ota_active');
+                    doRestoreOtaProgress(sn, true);
+                } else {
+                    localStorage.setItem('ota_active', '1');
+                    localStorage.removeItem('ota_cycle_active');
+                    doRestoreOtaProgress(sn, false);
+                }
+            } else {
+                // 没有正在进行的OTA，显示等待发起
+                enterIdleUI();
+            }
+        }).catch(function() {
+            // 查询失败，保守处理：保持当前UI
+        });
+    }
+
+    // 进入空闲状态：显示"暂无升级任务"，隐藏进度区，显示发起按钮
+    function enterIdleUI() {
+        document.getElementById('noProgressTip').style.display = '';
+        document.getElementById('progressContent').style.display = 'none';
+        document.getElementById('otaSubmitBtn').style.display = 'inline-block';
+        document.getElementById('otaStopBtn').style.display = 'none';
+        document.getElementById('cycleOverview').style.display = 'none';
+        // 停止轮询
+        if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+        if (cycleStatusTimer) { clearInterval(cycleStatusTimer); cycleStatusTimer = null; }
+        currentOtaSn = null;
+        localStorage.removeItem('ota_active');
+        localStorage.removeItem('ota_cycle_active');
+    }
 
     function restoreSavedVersions() {
         var mode = localStorage.getItem('ota_mode') || 'single';
@@ -771,36 +825,40 @@
 
         var isCycleActive = localStorage.getItem('ota_cycle_active') === '1';
         var isSingleActive = localStorage.getItem('ota_active') === '1';
-        if (!isCycleActive && !isSingleActive) return;
+        if (!isCycleActive && !isSingleActive) {
+            // localStorage 无标记，但仍主动查询后端（防止标记丢失但OTA仍在运行）
+            checkDeviceOtaState(savedSn);
+            return;
+        }
 
-        // 尝试恢复设备选择（最多重试3次）
+        // 先恢复正确的OTA模式（不依赖 ota_mode，而是用实际的 OTA 类型）
+        var actualMode = isCycleActive ? 'cycle' : 'single';
+        localStorage.setItem('ota_mode', actualMode);
+        switchOtaMode(actualMode);
+
+        // 立即恢复 OTA 进度轮询（不等设备列表，直接用 savedSn）
+        doRestoreOtaProgress(savedSn, isCycleActive);
+
+        // 异步恢复设备下拉选择（列表加载完后再选）
         var select = document.getElementById('otaDeviceSelect');
         var attempt = 0;
         function tryRestoreDevice() {
             attempt++;
+            if (!select) return false;
             for (var i = 0; i < select.options.length; i++) {
                 if (select.options[i].value === savedSn) {
                     select.selectedIndex = i;
+                    // 触发change事件：加载版本列表（checkDeviceOtaState会跳过，因为OTA已在显示中）
                     select.dispatchEvent(new Event('change'));
                     return true;
                 }
             }
-            if (attempt < 3) {
+            if (attempt < 5) {
                 setTimeout(tryRestoreDevice, 800);
             }
             return false;
         }
-
-        if (!tryRestoreDevice()) {
-            // 设备列表未加载，等一会再试
-            setTimeout(function() {
-                if (tryRestoreDevice()) {
-                    doRestoreOtaProgress(savedSn, isCycleActive);
-                }
-            }, 2500);
-        } else {
-            doRestoreOtaProgress(savedSn, isCycleActive);
-        }
+        tryRestoreDevice();
     }
 
     function doRestoreOtaProgress(savedSn, isCycleActive) {
@@ -810,7 +868,8 @@
                 if (data.active && data.state === 'running') {
                     currentOtaSn = savedSn;
                     enterRunningUI();
-                    document.getElementById('cycleOverview').style.display = 'block';
+                    // 立即用返回的数据填充循环概览（不等 fetchCycleStatus）
+                    updateCycleOverview(data);
                     startProgressPolling(savedSn);
                     startCycleStatusPolling(savedSn);
                 } else if (data.active && data.state === 'done') {
@@ -825,7 +884,9 @@
                 // API 失败，仍尝试恢复进度轮询
                 currentOtaSn = savedSn;
                 enterRunningUI();
-                document.getElementById('cycleOverview').style.display = 'block';
+                var overview = document.getElementById('cycleOverview');
+                overview.style.display = 'block';
+                overview.innerHTML = '循环压测进行中 &nbsp; 正在恢复详情...';
                 startProgressPolling(savedSn);
                 startCycleStatusPolling(savedSn);
             });
@@ -838,6 +899,18 @@
             fetchProgress(savedSn);  // 立即获取一次进度
             startProgressPolling(savedSn);
         }
+    }
+
+    // 更新循环概览UI
+    function updateCycleOverview(data) {
+        var overview = document.getElementById('cycleOverview');
+        var direction = data.current_direction === 'upgrade' ? '升级' : '降级';
+        var directionColor = data.current_direction === 'upgrade' ? '#2563eb' : '#d97706';
+        var targetVer = data.current_direction === 'upgrade' ? data.upgrade_version : data.downgrade_version;
+        overview.innerHTML = '循环压测 &nbsp; 第 <strong>' + data.current_cycle + '</strong> / ' + data.total_cycles + ' 轮 &nbsp; | &nbsp; <span style="color:' + directionColor + ';font-weight:600;">' + direction + ' → ' + targetVer + '</span> &nbsp; | &nbsp; 已产生 ' + (data.records ? data.records.length : 0) + ' 条记录';
+        overview.style.display = 'block';
+        overview.style.background = '#f0f4ff';
+        overview.style.color = '#1e40af';
     }
 
     function showCycleDoneState(data) {
@@ -894,12 +967,7 @@
         apiGet('/api/ota/cycle-status/' + sn).then(function(data) {
             if (!data.active) return;
 
-            var overview = document.getElementById('cycleOverview');
-            var direction = data.current_direction === 'upgrade' ? '升级' : '降级';
-            var directionColor = data.current_direction === 'upgrade' ? '#2563eb' : '#d97706';
-            var targetVer = data.current_direction === 'upgrade' ? data.upgrade_version : data.downgrade_version;
-            overview.innerHTML = '循环压测 &nbsp; 第 <strong>' + data.current_cycle + '</strong> / ' + data.total_cycles + ' 轮 &nbsp; | &nbsp; <span style="color:' + directionColor + ';font-weight:600;">' + direction + ' → ' + targetVer + '</span> &nbsp; | &nbsp; 已产生 ' + (data.records ? data.records.length : 0) + ' 条记录';
-            overview.style.display = 'block';
+            updateCycleOverview(data);
 
             if (data.state === 'done') {
                 showCycleDoneState(data);
@@ -914,6 +982,12 @@
     function fetchProgress(sn) {
         var envId = parseInt(document.getElementById('otaEnvSelect').value) || null;
         apiGet('/api/ota/progress/' + sn + (envId ? '?env_id=' + envId : '')).then(function(data) {
+            // Token 过期检测
+            if (data.token_expired) {
+                if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+                showTokenExpiredModal();
+                return;
+            }
             var downloadPct = data.download_percent || 0;
             var upgradePct = data.upgrade_percent || 0;
             var state = data.upgrade_state || '';
@@ -999,12 +1073,7 @@
     }
 
     function cleanupOtaUI() {
-        document.getElementById('otaSubmitBtn').style.display = 'inline-block';
-        document.getElementById('otaStopBtn').style.display = 'none';
-        if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
-        if (cycleStatusTimer) { clearInterval(cycleStatusTimer); cycleStatusTimer = null; }
-        localStorage.removeItem('ota_cycle_active');
-        localStorage.removeItem('ota_active');
+        enterIdleUI();
     }
 
     var currentAiRecordId = null;
@@ -1013,7 +1082,7 @@
     function showAIAnalysis(analysisText, recordId) {
         var modal = document.getElementById('aiAnalysisModal');
         var content = document.getElementById('aiAnalysisContent');
-        content.textContent = analysisText;
+        content.innerHTML = renderMarkdown(analysisText);
         currentAiRecordId = recordId || null;
         // 从 localStorage 恢复对话历史
         aiChatHistory = [];
@@ -1031,7 +1100,7 @@
                         msgDiv.innerHTML = '<span style="background:#3b82f6; color:#fff; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;">' + escapeHtml(msg.content) + '</span>';
                     } else {
                         msgDiv.style.cssText = 'margin-bottom:8px;';
-                        msgDiv.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word; white-space:pre-wrap;">' + escapeHtml(msg.content) + '</span>';
+                        msgDiv.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;" class="md-content">' + renderMarkdown(msg.content) + '</span>';
                     }
                     chatBox.appendChild(msgDiv);
                 });
@@ -1072,7 +1141,7 @@
 
             var aiMsg = document.createElement('div');
             aiMsg.style.cssText = 'margin-bottom:8px;';
-            aiMsg.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word; white-space:pre-wrap;">' + escapeHtml(reply) + '</span>';
+            aiMsg.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;" class="md-content">' + renderMarkdown(reply) + '</span>';
             chatBox.appendChild(aiMsg);
             chatBox.scrollTop = chatBox.scrollHeight;
         }).catch(function(err) {
@@ -1414,17 +1483,28 @@
             var parts = [];
             var serials = data.serial || {};
             var jlinks = data.jlink || {};
+            var anyRunning = false;
             Object.keys(serials).forEach(function(id) {
                 var s = serials[id];
+                if (s.is_running) anyRunning = true;
                 parts.push((s.is_running ? '串口运行中' : '串口已停止') + ' (' + (s.name || id) + ')');
             });
             Object.keys(jlinks).forEach(function(id) {
                 var j = jlinks[id];
+                if (j.is_running) anyRunning = true;
                 parts.push((j.is_running ? 'JLink运行中' : 'JLink已停止') + ' (' + (j.name || id) + ')');
             });
             box.innerHTML = parts.length
                 ? parts.map(function(p) { return '<span class="tag ' + (p.indexOf('运行中') >= 0 ? 'tag-success' : 'tag-danger') + '">' + escapeHtml(p) + '</span> '; }).join('')
                 : '<span style="color:#94a3b8;">未启动采集器</span>';
+
+            // 按钮互斥显示：有采集器运行时显示"停止采集"，否则显示"开始采集"
+            var btnStart = document.getElementById('btnStartCollect');
+            var btnStop = document.getElementById('btnStopCollect');
+            if (btnStart && btnStop) {
+                btnStart.style.display = anyRunning ? 'none' : '';
+                btnStop.style.display = anyRunning ? '' : 'none';
+            }
         }).catch(function() {});
     }
 
@@ -1521,6 +1601,38 @@
     function escapeHtml(str) {
         if (str === null || str === undefined) return '';
         return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Markdown 渲染
+    function renderMarkdown(md) {
+        if (!md) return '';
+        var html = escapeHtml(md);
+        // 代码块 ```...```
+        html = html.replace(/```([\s\S]*?)```/g, function(m, p1) {
+            return '<pre class="md-code-block">' + p1 + '</pre>';
+        });
+        // 标题 ## / ###
+        html = html.replace(/^### (.+)$/gm, '<h4 class="md-h4">$1</h4>');
+        html = html.replace(/^## (.+)$/gm, '<h3 class="md-h3">$1</h3>');
+        // 粗体 **text**
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        // 行内代码 `text`
+        html = html.replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>');
+        // 列表项 - 或 1.
+        html = html.replace(/^[\s]*[-]\s(.+)$/gm, '<li>$1</li>');
+        html = html.replace(/^[\s]*\d+[.]\s(.+)$/gm, '<li>$1</li>');
+        // 连续 li 包裹 ul
+        html = html.replace(/(<li>.*?<\/li>(?:<br>)?)+/g, function(m) {
+            return '<ul style="margin:4px 0 8px 0; padding-left:20px;">' + m.replace(/<br>/g, '') + '</ul>';
+        });
+        // 换行
+        html = html.replace(/\n/g, '<br>');
+        // 清理 h3/h4 后的 br
+        html = html.replace(/(<\/h[34]>)<br>/g, '$1');
+        // 清理 ul 前后的 br
+        html = html.replace(/<br>(<ul)/g, '$1');
+        html = html.replace(/(<\/ul>)<br>/g, '$1');
+        return html;
     }
 </script>
 {% endblock %}

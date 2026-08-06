@@ -54,18 +54,21 @@ class SerialLogger:
                         self.buffer.append(ts + text)
                 else:
                     time.sleep(0.1)
-            except Exception as e:
-                logger.error(f"串口 {self.name} ({self.port}) 读取异常: {e}")
-                self.is_running = False
+            except Exception:
+                # 串口被关闭或读取异常，退出循环
                 break
     
     def stop(self):
-        """停止采集"""
+        """停止采集：先关闭串口连接，再等待线程退出"""
         self.is_running = False
-        if self.thread:
-            self.thread.join(timeout=2)
+        # 先关闭串口连接，使 _read_loop 中的 in_waiting/read 立即抛异常退出
         if self.serial_conn and self.serial_conn.is_open:
-            self.serial_conn.close()
+            try:
+                self.serial_conn.close()
+            except Exception:
+                pass
+        if self.thread:
+            self.thread.join(timeout=3)
         logger.info(f"串口 {self.name} ({self.port}) 采集已停止")
     
     def get_logs(self):

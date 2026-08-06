@@ -42,21 +42,22 @@ def _parse_sse_content(text):
 SYSTEM_PROMPT = """你是一位固件OTA升级分析专家。用户会提供门锁设备OTA升级失败时的日志（可能来自串口或JLink RTT）。
 请分析日志内容，找出OTA升级失败的根本原因。
 
-请按以下格式输出分析报告：
+请严格按以下Markdown格式输出分析报告：
 
-## 失败原因总结
-[简要说明失败的根本原因，1-2句话]
+## 🔍 失败原因总结
+简要说明失败的根本原因（1-2句话）
 
-## 各日志源关键日志片段
-[列出每个日志源中与失败相关的关键日志行，标注日志来源名称和类型（串口/JLink）]
+## 📋 关键日志片段
+列出每个日志源中与失败相关的关键日志行，标注来源和类型
 
-## 建议解决方案
-[给出2-3条具体的修复建议]
+## 🔧 建议解决方案
+给出2-3条具体的修复建议，每条用序号标注
 
 注意：
 - 如果日志中没有明显的错误信息，请说明"日志中未发现明确错误信息"
 - 日志可能包含乱码或不可读字符，请忽略
 - 关注关键词：error, fail, timeout, abort, exception, reset, crash, disconnect, retry
+- 输出使用中文
 """
 
 BATCH_REPORT_PROMPT = """你是一位固件OTA升级测试分析专家。用户会提供多条OTA测试记录的汇总数据。
@@ -164,24 +165,61 @@ class AIAnalyzer:
         Returns:
             str: AI分析报告
         """
-        if not record.log_paths:
-            return "分析失败：无关联的日志文件"
-
         # 解析日志文件路径列表
-        try:
-            log_paths = json.loads(record.log_paths)
-        except (json.JSONDecodeError, TypeError):
-            log_paths = [record.log_paths] if record.log_paths else []
+        log_contents = []
+        if record.log_paths:
+            try:
+                log_paths = json.loads(record.log_paths)
+            except (json.JSONDecodeError, TypeError):
+                log_paths = [record.log_paths] if record.log_paths else []
+            log_contents = self._read_log_files(log_paths)
 
-        if not log_paths:
-            return "分析失败：无关联的日志文件"
-
-        # 读取所有日志文件
-        log_contents = self._read_log_files(log_paths)
+        # 如果没有日志文件，使用OTA记录信息作为上下文
         if not log_contents:
-            return "分析失败：所有关联的日志文件均不存在或为空"
+            logger.warning(f"记录 {record.id} 无可用日志文件，使用OTA记录信息分析")
+            return self._analyze_record_info(record)
 
         return self.analyze_logs(log_contents)
+
+    def _analyze_record_info(self, record):
+        """无日志文件时，基于OTA记录信息生成AI分析"""
+        info_parts = [f"OTA升级记录信息："]
+        info_parts.append(f"设备SN: {record.device_sn or '未知'}")
+        info_parts.append(f"源版本: {record.source_version or '未知'}")
+        info_parts.append(f"目标版本: {record.target_version or '未知'}")
+        info_parts.append(f"升级结果: {record.result or '未知'}")
+        info_parts.append(f"升级进度: {record.upgrade_percent or 0}%")
+        info_parts.append(f"下载进度: {record.download_percent or 0}%")
+        info_parts.append(f"失败原因: {record.fail_reason or '无'}")
+        info_parts.append(f"升级耗时: {record.duration or 0}秒")
+
+        info_text = '\n'.join(info_parts)
+
+        user_message = f"以下是OTA升级失败的记录信息（无采集日志）：\n\n{info_text}\n\n"
+        user_message += "请根据以上信息分析可能的失败原因，并给出排查建议。"
+
+        system_prompt = (
+            "你是一位嵌入式OTA升级分析专家。请根据OTA升级记录信息分析失败原因。"
+            "如果没有日志文件，请基于失败原因码和升级状态给出可能的原因分析和排查建议。"
+            "请严格按以下Markdown格式输出：\n\n"
+            "## 🔍 失败原因总结\n简要说明可能的失败原因\n\n"
+            "## 🔧 建议解决方案\n给出2-3条具体修复建议\n\n"
+            "回答使用中文，结构化输出。"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+
+        try:
+            reply = self.chat(messages)
+            logger.info(f"记录 {record.id} 基于记录信息分析完成")
+            return reply
+        except Exception as e:
+            error_msg = f"分析失败：AI接口调用失败 - {e}"
+            logger.error(error_msg)
+            return error_msg
 
     def _read_log_files(self, log_paths):
         """读取日志文件列表，返回 [{'name': ..., 'content': ...}]"""
@@ -203,7 +241,7 @@ class AIAnalyzer:
 
     def build_chat_context(self, record):
         """
-        构建对话上下文：日志内容 + AI分析报告
+        构建对话上下文：日志内容 + AI分析报告 + 记录基本信息
         """
         context = ""
         # 添加AI分析报告
@@ -227,6 +265,9 @@ class AIAnalyzer:
         context += f"升级结果: {record.result or '未知'}\n"
         context += f"来源版本: {record.source_version or '未知'}\n"
         context += f"目标版本: {record.target_version or '未知'}\n"
+        context += f"升级进度: {record.upgrade_percent or 0}%\n"
+        context += f"下载进度: {record.download_percent or 0}%\n"
+        context += f"升级耗时: {record.duration or 0}秒\n"
         if record.fail_reason:
             context += f"失败原因: {record.fail_reason}\n"
         return context

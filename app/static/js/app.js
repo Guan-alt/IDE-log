@@ -14,6 +14,10 @@ async function apiGet(url) {
     const res = await fetch(url);
     if (gen !== _pageGen) return new Promise(function(){}); // 页面已切换，挂起回调
     if (!res.ok) {
+        try {
+            const data = await res.clone().json();
+            if (data.token_expired) { showTokenExpiredModal(); return new Promise(function(){}); }
+        } catch(e) {}
         throw new Error('请求失败: ' + res.status);
     }
     return res.json();
@@ -29,6 +33,10 @@ async function apiPost(url, data) {
     });
     if (gen !== _pageGen) return new Promise(function(){});
     if (!res.ok) {
+        try {
+            const d = await res.clone().json();
+            if (d.token_expired) { showTokenExpiredModal(); return new Promise(function(){}); }
+        } catch(e) {}
         throw new Error('请求失败: ' + res.status);
     }
     return res.json();
@@ -42,6 +50,10 @@ async function apiDelete(url) {
     });
     if (gen !== _pageGen) return new Promise(function(){});
     if (!res.ok) {
+        try {
+            const d = await res.clone().json();
+            if (d.token_expired) { showTokenExpiredModal(); return new Promise(function(){}); }
+        } catch(e) {}
         throw new Error('请求失败: ' + res.status);
     }
     return res.json();
@@ -57,9 +69,41 @@ async function apiPut(url, data) {
     });
     if (gen !== _pageGen) return new Promise(function(){});
     if (!res.ok) {
+        try {
+            const d = await res.clone().json();
+            if (d.token_expired) { showTokenExpiredModal(); return new Promise(function(){}); }
+        } catch(e) {}
         throw new Error('请求失败: ' + res.status);
     }
     return res.json();
+}
+
+/* ===================== Token 过期弹窗 ===================== */
+function showTokenExpiredModal() {
+    // 避免重复弹出
+    if (document.getElementById('tokenExpiredModal')) return;
+    var overlay = document.createElement('div');
+    overlay.id = 'tokenExpiredModal';
+    overlay.className = 'modal-overlay';
+    overlay.style.cssText = 'display:flex !important; z-index:10000;';
+    overlay.innerHTML =
+        '<div class="modal-content" style="max-width:420px; text-align:center;">' +
+            '<div class="modal-header"><span class="modal-title">OTA Token 已过期</span></div>' +
+            '<div class="modal-body">' +
+                '<div style="font-size:48px; margin-bottom:16px;">&#9888;</div>' +
+                '<p style="margin-bottom:8px; font-size:16px;">OTA 服务 Token 已失效，无法查询设备信息或发起 OTA 升级。</p>' +
+                '<p style="color:#6b7280; font-size:13px;">请前往设置页面更新 Token 后继续操作。</p>' +
+            '</div>' +
+            '<div class="modal-footer" style="padding:12px 24px; border-top:1px solid #f1f5f9; display:flex; gap:8px; justify-content:center;">' +
+                '<button class="btn btn-primary" onclick="navigateTo(\'/settings\'); closeTokenExpiredModal();" style="min-width:120px;">前往设置</button>' +
+                '<button class="btn btn-secondary" onclick="closeTokenExpiredModal()" style="min-width:80px;">稍后</button>' +
+            '</div>' +
+        '</div>';
+    document.body.appendChild(overlay);
+}
+function closeTokenExpiredModal() {
+    var m = document.getElementById('tokenExpiredModal');
+    if (m) m.remove();
 }
 
 /* ===================== 进度条更新 ===================== */

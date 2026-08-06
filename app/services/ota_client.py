@@ -4,6 +4,14 @@ import time
 
 logger = logging.getLogger(__name__)
 
+
+def _is_token_expired(exc):
+    """判断异常是否为 403 token 过期"""
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return exc.response is not None and exc.response.status_code == 403
+    return False
+
+
 class OtaClient:
     """OTA API客户端，封装门锁OTA相关接口"""
 
@@ -48,7 +56,7 @@ class OtaClient:
             return info
         except Exception as e:
             logger.error(f"获取设备信息失败: {e}")
-            return {'version': '', 'online': False}
+            return {'version': '', 'online': False, 'token_expired': _is_token_expired(e)}
 
     def _get_device_info_overseas(self, sn):
         """国外平台：通过 /device/state/page 查询设备版本（pidList=ota_ver）"""
@@ -91,7 +99,7 @@ class OtaClient:
             return info
         except Exception as e:
             logger.error(f"获取设备信息失败(国外): {e}")
-            return {'version': '', 'online': False}
+            return {'version': '', 'online': False, 'token_expired': _is_token_expired(e)}
 
     @staticmethod
     def _is_online_value(value):
@@ -103,7 +111,7 @@ class OtaClient:
         return str(value).strip().lower() in (
             'true', '1', 'online', 'on', 'yes', 'up', 'connected', '在线', '正常'
         )
-    
+
     def ota_start(self, sn, target_ver):
         """发起OTA升级请求"""
         try:
@@ -120,14 +128,15 @@ class OtaClient:
             else:
                 return False, data.get('message', '未知错误')
         except requests.exceptions.HTTPError as e:
+            token_expired = _is_token_expired(e)
             # 尝试提取响应体中的错误信息
             try:
                 error_msg = e.response.json().get('message', str(e))
             except Exception:
                 error_msg = str(e)
-            return False, error_msg
+            return False, error_msg, token_expired
         except Exception as e:
-            return False, str(e)
+            return False, str(e), False
 
     def get_available_versions(self, sn, limit=100):
         """获取设备可用的所有OTA版本列表"""
@@ -158,8 +167,10 @@ class OtaClient:
             return []
         except Exception as e:
             logger.error(f"获取可用版本列表失败: {e}")
+            if _is_token_expired(e):
+                return {'token_expired': True}
             return []
-    
+
     def get_progress(self, sn):
         """查询OTA升级进度，返回完整信息字典"""
         max_retries = 3
@@ -203,6 +214,19 @@ class OtaClient:
                 logger.warning(f"获取OTA进度超时 (尝试 {attempt + 1}/{max_retries})")
                 time.sleep(2)
             except Exception as e:
+                if _is_token_expired(e):
+                    logger.error(f"OTA Token已过期 (403)")
+                    return {
+                        'upgrade_percent': 0,
+                        'download_percent': 0,
+                        'upgrade_state': '',
+                        'upgrade_errno': 0,
+                        'current_version': '',
+                        'target_version': '',
+                        'upgrade_time': '',
+                        'device_name': '',
+                        'token_expired': True
+                    }
                 if attempt < max_retries - 1:
                     logger.warning(f"获取OTA进度失败，正在重试... ({e})")
                     time.sleep(2)

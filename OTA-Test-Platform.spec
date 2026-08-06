@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['main.py'],
+    ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('app', 'app'), ('config.py', '.')],
-    hiddenimports=['flask', 'flask_sqlalchemy', 'serial', 'serial.tools.list_ports', 'requests', 'pyserial'],
+    datas=[('app/templates', 'app/templates'), ('app/static', 'app/static')],
+    hiddenimports=['pysqlite3.dbapi2', 'pkg_resources.py2_warn'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -19,13 +19,16 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='OTA-Test-Platform',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -33,13 +36,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version='version.txt',
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='OTA-Test-Platform',
 )

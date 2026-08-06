@@ -58,29 +58,38 @@ def save_logs_for_record(record, device_sn):
         os.makedirs(log_dir)
 
     saved_paths = []
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
+    # 串口日志：遍历所有运行中的采集器
+    serial_running = 0
     for cid, s_logger in serial_manager.loggers.items():
         if s_logger.is_running:
+            serial_running += 1
             try:
                 filepath = s_logger.save_to_file(log_dir)
                 saved_paths.append(filepath)
             except Exception as e:
                 logger.error(f"保存串口日志失败: {e}")
 
+    # JLink日志：当前用户的运行中采集器
     user_id = record.user_id
     user_jlink_loggers = jlink_loggers.get(user_id, {})
+    jlink_running = 0
     for cid, j_logger in user_jlink_loggers.items():
         if j_logger.is_running:
+            jlink_running += 1
             try:
                 filepath = j_logger.save_to_file(log_dir)
                 saved_paths.append(filepath)
             except Exception as e:
                 logger.error(f"保存JLink日志失败: {e}")
 
+    logger.info(f"记录 {record.id} save_logs: 串口运行中={serial_running} JLink运行中={jlink_running} 已保存={len(saved_paths)}")
+
     if saved_paths:
         record.log_paths = json.dumps(saved_paths, ensure_ascii=False)
         logger.info(f"记录 {record.id} 已保存 {len(saved_paths)} 个日志文件")
+    else:
+        logger.warning(f"记录 {record.id} 无运行中的日志采集器，log_paths 为空")
 
 def trigger_ai_analysis(record):
     """触发AI分析OTA失败日志"""
@@ -140,7 +149,13 @@ def start_ota():
     # 设备已关联环境时优先使用设备环境
     env_id = resolve_env_id(sn, env_id, user_id)
     client = get_ota_client(env_id, user_id)
-    success, message = client.ota_start(sn, target_version)
+    result = client.ota_start(sn, target_version)
+    success = result[0]
+    message = result[1]
+    token_expired = result[2] if len(result) > 2 else False
+
+    if token_expired:
+        return jsonify({'error': 'OTA Token已过期，请更新', 'token_expired': True}), 403
 
     # 检查是否设备已是目标版本（forceUpgrade支持任意版本，仅同版本时返回此错误）
     already_target = not success and '最新版本' in message
@@ -208,6 +223,8 @@ def get_versions(sn):
     env_id = resolve_env_id(sn, None, user_id)
     client = get_ota_client(env_id, user_id)
     versions = client.get_available_versions(sn)
+    if isinstance(versions, dict) and versions.get('token_expired'):
+        return jsonify({'error': 'OTA Token已过期，请更新', 'token_expired': True}), 403
     return jsonify({'success': True, 'versions': versions})
 
 # ===== 循环OTA接口 =====
@@ -218,7 +235,13 @@ def _start_ota_leg(sn, target_version, tag='', env_id=None, user_id=None, task_i
     if user_id is None:
         user_id = get_current_user_id()
     client = get_ota_client(env_id, user_id)
-    success, message = client.ota_start(sn, target_version)
+    result = client.ota_start(sn, target_version)
+    success = result[0]
+    message = result[1]
+    token_expired = result[2] if len(result) > 2 else False
+    if token_expired:
+        logger.error(f"[CycleOTA] {sn} Token过期，中断循环")
+        return None, False, True  # record_id=None, success=False, token_expired=True
 
     # 检查是否设备已是最新版本（升级已到目标版本或降级已到目标版本）
     already_target = not success and '最新版本' in message
@@ -269,20 +292,26 @@ def _start_ota_leg(sn, target_version, tag='', env_id=None, user_id=None, task_i
         logger.info(f"[循环OTA] {sn} {tag} -> {target_version} 请求失败: {message}")
         return record.id, False
 
-def _verify_ota_success_by_version(sn, target_version, env_id, user_id, max_retries=6, interval=5):
+def _verify_ota_success_by_version(sn, target_version, env_id, user_id, max_retries=8, interval=5):
     """通过查询设备当前版本是否到达目标版本来确认OTA是否真正成功。
-    每隔 interval 秒查一次，最多查 max_retries 次。"""
+    首次等待10秒让设备完成重启上报，之后每隔 interval 秒查一次，最多查 max_retries 次。
+    返回: (confirmed: bool, token_expired: bool)"""
     client = get_ota_client(env_id, user_id)
+    time.sleep(10)  # 首次等待10秒，让设备完成重启和版本上报
     for i in range(max_retries):
         time.sleep(interval)
         try:
-            current_ver = client.get_version(sn)
+            info = client.get_device_info(sn)
+            if info.get('token_expired'):
+                logger.error(f"[循环OTA] {sn} 版本确认时Token过期")
+                return False, True
+            current_ver = info.get('version', '')
             logger.info(f"[循环OTA] {sn} 版本确认第{i+1}/{max_retries}次: 当前={current_ver} 目标={target_version}")
             if current_ver and target_version and current_ver.strip() == target_version.strip():
-                return True
+                return True, False
         except Exception as e:
             logger.warning(f"[循环OTA] {sn} 版本确认第{i+1}次查询异常: {e}")
-    return False
+    return False, False
 
 def _wait_ota_terminal(sn, env_id, user_id, record_id, timeout=3600):
     """轮询OTA网关，等待终态（成功/失败/超时）。
@@ -291,26 +320,37 @@ def _wait_ota_terminal(sn, env_id, user_id, record_id, timeout=3600):
     SUCCESS_STATES = ('success', 'burn_done', 'done', 'finish', 'finished')
     FAIL_STATES = ('burn_fail', 'down_fail', 'fail', 'failed', 'error', 'timeout')
     start_time = datetime.now()
-    
+    consecutive_errors = 0
+    MAX_CONSECUTIVE_ERRORS = 10
+
     while True:
-        time.sleep(3)
-        
+        time.sleep(5)  # 5秒轮询间隔，减少网关压力
+
         # 检查是否用户已停止
         with cycle_lock:
             user_tasks = cycling_tasks.get(user_id, {})
             task = user_tasks.get(sn)
             if not task or task['state'] in ('stopping', 'stopped'):
                 return False, False, False, 'stopped'
-        
+
         try:
             progress = client.get_progress(sn)
+            consecutive_errors = 0  # 重置错误计数
         except Exception as e:
-            logger.warning(f"[循环OTA] {sn} 轮询进度异常: {e}")
+            consecutive_errors += 1
+            logger.warning(f"[循环OTA] {sn} 轮询进度异常({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {e}")
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                logger.error(f"[循环OTA] {sn} 连续{MAX_CONSECUTIVE_ERRORS}次轮询异常，判定为超时")
+                return False, False, True, 'timeout'
             continue
-        
+
+        if progress.get('token_expired'):
+            logger.error(f"[循环OTA] {sn} 轮询进度时Token过期")
+            return False, False, False, 'token_expired'
+
         state = progress.get('upgrade_state', '')
         upgrade_pct = progress.get('upgrade_percent', 0)
-        
+
         # 更新数据库中的进度
         try:
             rec = OtaRecord.query.get(record_id)
@@ -345,21 +385,24 @@ def _wait_ota_terminal(sn, env_id, user_id, record_id, timeout=3600):
         if state_is_success or state_is_fail or is_timeout:
             logger.info(f"[循环OTA] {sn} 网关终态: state={state} pct={upgrade_pct} success={state_is_success} fail={state_is_fail} timeout={is_timeout}")
             return state_is_success, state_is_fail, is_timeout, state
-        
-        # 保存日志
-        if state_is_success or state_is_fail or is_timeout:
-            try:
-                rec = OtaRecord.query.get(record_id)
-                if rec and not rec.log_paths:
-                    save_logs_for_record(rec, sn)
-            except Exception:
-                pass
 
 def _cycle_worker(user_id, sn):
     """循环OTA后台线程：独立驱动整个循环流程。
     不依赖前端轮询progress接口，自己轮询网关、确认版本、更新记录、继续下一轮。"""
     logger.info(f"[循环OTA] {sn} 后台线程启动")
-    
+
+    def _interruptible_sleep(seconds, user_id, sn):
+        """可中断的sleep，每3秒检查一次停止状态"""
+        elapsed = 0
+        while elapsed < seconds:
+            time.sleep(min(3, seconds - elapsed))
+            elapsed += min(3, seconds - elapsed)
+            with cycle_lock:
+                task = cycling_tasks.get(user_id, {}).get(sn)
+                if not task or task['state'] in ('stopping', 'stopped'):
+                    return False
+        return True
+
     try:
         from app import create_app
         app = create_app()
@@ -379,7 +422,7 @@ def _cycle_worker(user_id, sn):
                     if task['state'] in ('done', 'failed'):
                         logger.info(f"[循环OTA] {sn} 已完成/失败，退出")
                         return
-                    
+
                     env_id = task.get('env_id')
                     task_id = task.get('task_id')
                     current_cycle = task['current_cycle']
@@ -389,18 +432,37 @@ def _cycle_worker(user_id, sn):
                     total_cycles = task['total_cycles']
                     records = task['records']
                     current_record_id = task.get('current_record_id')
-                
+
                 # 如果有当前正在进行的OTA记录，等待它完成
                 if current_record_id:
                     rec = OtaRecord.query.get(current_record_id)
                     if rec and rec.result == 'OTA升级中':
                         logger.info(f"[循环OTA] {sn} 等待OTA完成 record_id={current_record_id} direction={current_direction} cycle={current_cycle}")
-                        
+
                         # 1. 等待网关返回终态
                         state_success, state_fail, is_timeout, state = _wait_ota_terminal(
                             sn, env_id, user_id, current_record_id
                         )
-                        
+
+                        if state == 'token_expired':
+                            with cycle_lock:
+                                task = cycling_tasks.get(user_id, {}).get(sn)
+                                if task:
+                                    task['state'] = 'failed'
+                                    task['fail_reason'] = 'OTA Token已过期'
+                                    task['current_record_id'] = None
+                            logger.error(f"[循环OTA] {sn} Token过期，中断循环")
+                            return
+
+                        if state == 'stopped':
+                            with cycle_lock:
+                                task = cycling_tasks.get(user_id, {}).get(sn)
+                                if task:
+                                    task['state'] = 'stopped'
+                                    task['current_record_id'] = None
+                            trigger_cycle_ai_analysis(user_id, sn)
+                            return
+
                         # 检查是否用户已停止
                         with cycle_lock:
                             task = cycling_tasks.get(user_id, {}).get(sn)
@@ -409,11 +471,21 @@ def _cycle_worker(user_id, sn):
                                 logger.info(f"[循环OTA] {sn} 等待期间用户已停止")
                                 trigger_cycle_ai_analysis(user_id, sn)
                                 return
-                        
+
                         # 2. 版本确认（无论网关报成功还是失败，都查版本）
                         target_ver = rec.target_version if rec else ''
-                        version_confirmed = _verify_ota_success_by_version(sn, target_ver, env_id, user_id)
-                        
+                        version_confirmed, ver_token_expired = _verify_ota_success_by_version(sn, target_ver, env_id, user_id)
+
+                        if ver_token_expired:
+                            with cycle_lock:
+                                task = cycling_tasks.get(user_id, {}).get(sn)
+                                if task:
+                                    task['state'] = 'failed'
+                                    task['fail_reason'] = 'OTA Token已过期'
+                                    task['current_record_id'] = None
+                            logger.error(f"[循环OTA] {sn} 版本确认时Token过期，中断循环")
+                            return
+
                         # 3. 更新记录结果
                         with cycle_lock:
                             task = cycling_tasks.get(user_id, {}).get(sn)
@@ -422,7 +494,7 @@ def _cycle_worker(user_id, sn):
                                 logger.info(f"[循环OTA] {sn} 版本确认后用户已停止")
                                 trigger_cycle_ai_analysis(user_id, sn)
                                 return
-                        
+
                         if version_confirmed:
                             rec.result = 'OTA升级成功'
                             rec.end_time = datetime.now()
@@ -442,43 +514,42 @@ def _cycle_worker(user_id, sn):
                                 save_logs_for_record(rec, sn)
                             db.session.commit()
                             logger.info(f"[循环OTA] {sn} 版本确认失败 record_id={current_record_id}")
-                            
+
                             with cycle_lock:
                                 task = cycling_tasks.get(user_id, {}).get(sn)
                                 if task:
                                     task['state'] = 'failed'
                                     task['fail_reason'] = f"第{current_cycle}轮 {current_direction} 版本确认失败"
-                                task['current_record_id'] = None
+                                    task['current_record_id'] = None
                             trigger_cycle_ai_analysis(user_id, sn)
                             return
-                        
+
                         # 4. 清除当前记录ID
                         with cycle_lock:
                             task = cycling_tasks.get(user_id, {}).get(sn)
                             if task:
                                 task['current_record_id'] = None
-                    
-                    # 5. 随机等待30~60秒后继续下一轮
+
+                    # 5. 随机等待30~60秒后继续下一轮（可中断）
                     wait_time = random.randint(30, 60)
                     logger.info(f"[循环OTA] {sn} 等待{wait_time}秒后继续")
-                    time.sleep(wait_time)
-                    
-                    # 等待期间检查用户是否已停止
-                    with cycle_lock:
-                        task = cycling_tasks.get(user_id, {}).get(sn)
-                        if not task or task['state'] in ('stopping', 'stopped'):
-                            task['state'] = 'stopped' if task else 'stopped'
-                            logger.info(f"[循环OTA] {sn} 等待期间用户已停止")
-                            trigger_cycle_ai_analysis(user_id, sn)
-                            return
-                
+                    if not _interruptible_sleep(wait_time, user_id, sn):
+                        with cycle_lock:
+                            task = cycling_tasks.get(user_id, {}).get(sn)
+                            if task:
+                                task['state'] = 'stopped'
+                                task['current_record_id'] = None
+                        logger.info(f"[循环OTA] {sn} 等待期间用户已停止")
+                        trigger_cycle_ai_analysis(user_id, sn)
+                        return
+
                 # 6. 发起下一轮OTA
                 with cycle_lock:
                     task = cycling_tasks.get(user_id, {}).get(sn)
                     if not task or task['state'] in ('stopping', 'stopped'):
                         task['state'] = 'stopped' if task else 'stopped'
                         return
-                    
+
                     # 推进方向
                     if current_direction == 'upgrade':
                         # 升级完成 → 切换到降级
@@ -500,12 +571,25 @@ def _cycle_worker(user_id, sn):
                             logger.info(f"[循环OTA] {sn} 全部{total_cycles}轮完成")
                             trigger_cycle_ai_analysis(user_id, sn)
                             return
-                
+
                 # 发起下一轮OTA
                 tag = f"{next_direction} 第{next_cycle}轮"
                 logger.info(f"[循环OTA] {sn} 发起 {tag} -> {next_target}")
-                rid, ok = _start_ota_leg(sn, next_target, tag, env_id, user_id, task_id)
-                
+                leg_result = _start_ota_leg(sn, next_target, tag, env_id, user_id, task_id)
+                rid = leg_result[0] if leg_result[0] else None
+                ok = leg_result[1]
+                leg_token_expired = leg_result[2] if len(leg_result) > 2 else False
+
+                if leg_token_expired:
+                    with cycle_lock:
+                        task = cycling_tasks.get(user_id, {}).get(sn)
+                        if task:
+                            task['state'] = 'failed'
+                            task['fail_reason'] = 'OTA Token已过期'
+                            task['current_record_id'] = None
+                    logger.error(f"[循环OTA] {sn} 发起OTA时Token过期，中断循环")
+                    return
+
                 if ok and rid is not None:
                     with cycle_lock:
                         task = cycling_tasks.get(user_id, {}).get(sn)
@@ -514,9 +598,18 @@ def _cycle_worker(user_id, sn):
                             task['current_record_id'] = rid
                     logger.info(f"[循环OTA] {sn} {tag} 已发起 record_id={rid}")
                 elif ok and rid is None:
-                    # 已是目标版本，跳过，直接进入下一轮（循环继续）
+                    # 已是目标版本，跳过，等待后继续下一轮（避免快速循环）
                     logger.info(f"[循环OTA] {sn} {tag} 已是目标版本，跳过")
-                    # 不设 current_record_id，循环继续
+                    # 等待10秒后继续，避免快速循环
+                    if not _interruptible_sleep(10, user_id, sn):
+                        with cycle_lock:
+                            task = cycling_tasks.get(user_id, {}).get(sn)
+                            if task:
+                                task['state'] = 'stopped'
+                                task['current_record_id'] = None
+                        logger.info(f"[循环OTA] {sn} 跳过等待期间用户已停止")
+                        trigger_cycle_ai_analysis(user_id, sn)
+                        return
                     continue
                 else:
                     # OTA请求失败
@@ -528,7 +621,7 @@ def _cycle_worker(user_id, sn):
                             task['current_record_id'] = None
                     trigger_cycle_ai_analysis(user_id, sn)
                     return
-                    
+
     except Exception as e:
         logger.error(f"[循环OTA] {sn} 后台线程异常: {e}", exc_info=True)
         with cycle_lock:
@@ -589,8 +682,14 @@ def start_ota_cycle():
 
     # 发起第一轮升级；如果是"已是目标版本"则跳过并自动发起降级
     first_rid = None
-    rid, ok = _start_ota_leg(sn, upgrade_version, f"升级 第1轮", env_id, user_id, task_id)
-    if ok:
+    leg1 = _start_ota_leg(sn, upgrade_version, f"升级 第1轮", env_id, user_id, task_id)
+    rid = leg1[0]
+    ok = leg1[1]
+    leg1_te = leg1[2] if len(leg1) > 2 else False
+    if leg1_te:
+        cycling_tasks[user_id][sn]['state'] = 'failed'
+        cycling_tasks[user_id][sn]['fail_reason'] = 'OTA Token已过期'
+    elif ok:
         if rid is not None:
             cycling_tasks[user_id][sn]['records'].append(rid)
             cycling_tasks[user_id][sn]['current_record_id'] = rid
@@ -598,8 +697,14 @@ def start_ota_cycle():
         else:
             # 已是最新版本，跳过升级，直接发起降级
             cycling_tasks[user_id][sn]['current_direction'] = 'downgrade'
-            downgrade_rid, downgrade_ok = _start_ota_leg(sn, downgrade_version, f"降级 第1轮", env_id, user_id, task_id)
-            if downgrade_ok:
+            leg2 = _start_ota_leg(sn, downgrade_version, f"降级 第1轮", env_id, user_id, task_id)
+            downgrade_rid = leg2[0]
+            downgrade_ok = leg2[1]
+            leg2_te = leg2[2] if len(leg2) > 2 else False
+            if leg2_te:
+                cycling_tasks[user_id][sn]['state'] = 'failed'
+                cycling_tasks[user_id][sn]['fail_reason'] = 'OTA Token已过期'
+            elif downgrade_ok:
                 if downgrade_rid is not None:
                     cycling_tasks[user_id][sn]['records'].append(downgrade_rid)
                     cycling_tasks[user_id][sn]['current_record_id'] = downgrade_rid
@@ -802,5 +907,77 @@ def get_progress(sn):
         'record_id': record.id if record else None,
         'is_finished': is_finished,
         'is_timeout': is_timeout,
-        'ai_analysis': record.ai_analysis if record else None
+        'ai_analysis': record.ai_analysis if record else None,
+        'token_expired': progress.get('token_expired', False)
+    })
+
+
+# ===== 设备OTA状态检查（供前端设备选择时调用） =====
+
+@ota_bp.route('/check-status/<string:sn>', methods=['GET'])
+@login_required
+def check_ota_status(sn):
+    """检查指定设备是否有正在进行的OTA（循环或单次），供前端设备选择时调用"""
+    user_id = get_current_user_id()
+
+    # 1. 检查循环OTA
+    task = cycling_tasks.get(user_id, {}).get(sn)
+    if task and task.get('state') == 'running':
+        return jsonify({
+            'active': True,
+            'mode': 'cycle',
+            'cycle_info': {
+                'current_cycle': task.get('current_cycle', 1),
+                'total_cycles': task.get('total_cycles', 1),
+                'current_direction': task.get('current_direction', 'upgrade'),
+                'upgrade_version': task.get('upgrade_version', ''),
+                'downgrade_version': task.get('downgrade_version', ''),
+                'env_id': task.get('env_id')
+            }
+        })
+
+    # 2. 检查单次OTA：查询进度，is_finished=False 说明正在运行
+    env_id = request.args.get('env_id', type=int)
+    env_id = resolve_env_id(sn, env_id, user_id)
+    client = get_ota_client(env_id, user_id)
+    progress = client.get_progress(sn)
+
+    if progress.get('token_expired'):
+        return jsonify({
+            'active': False,
+            'mode': None,
+            'token_expired': True
+        })
+
+    state = progress.get('upgrade_state', '')
+    upgrade_pct = progress.get('upgrade_percent', 0)
+    SUCCESS_STATES = ('success', 'burn_done', 'done', 'finish', 'finished')
+    FAIL_STATES = ('burn_fail', 'down_fail', 'fail', 'failed', 'error', 'timeout')
+    state_is_success = state in SUCCESS_STATES and not (state == 'burn_done' and upgrade_pct < 100)
+    state_is_fail = state in FAIL_STATES
+    is_finished = state_is_success or state_is_fail
+
+    # 查询最新记录，判断是否正在升级中
+    record = OtaRecord.query.filter_by(device_sn=sn, user_id=user_id).order_by(OtaRecord.id.desc()).first()
+    record_in_progress = record and record.result == 'OTA升级中' if record else False
+
+    # OTA正在进行的判断：进度未完成 或 记录标记为升级中
+    if not is_finished or record_in_progress:
+        return jsonify({
+            'active': True,
+            'mode': 'single',
+            'progress_info': {
+                'upgrade_percent': progress.get('upgrade_percent', 0),
+                'download_percent': progress.get('download_percent', 0),
+                'upgrade_state': state,
+                'current_version': progress.get('current_version', ''),
+                'target_version': progress.get('target_version', ''),
+                'env_id': env_id
+            }
+        })
+
+    # 3. 没有正在进行的OTA
+    return jsonify({
+        'active': False,
+        'mode': None
     })

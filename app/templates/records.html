@@ -36,11 +36,17 @@
 
 <!-- 记录表格 -->
 <div class="card">
-    <h2 class="card-title">测试记录</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h2 class="card-title">测试记录</h2>
+        <div class="action-group">
+            <button class="btn btn-secondary btn-sm" id="btnManageToggle" onclick="toggleManageMode()">管理</button>
+            <button class="btn btn-danger btn-sm" id="btnClearAll" onclick="clearAllRecords()" style="display:none;">清空全部</button>
+        </div>
+    </div>
     <table class="table" id="recordTable">
         <thead>
             <tr>
-                <th><input type="checkbox" id="selectAllRecords"></th>
+                <th id="thCheckbox" style="display:none;"><input type="checkbox" id="selectAllRecords"></th>
                 <th>次数</th>
                 <th>设备 SN</th>
                 <th>目标版本</th>
@@ -58,6 +64,7 @@
     <div id="batchAction" style="display:none; margin-top:12px; text-align:right;">
         <span id="selectedCount" style="margin-right:12px; color:#64748b; font-size:14px;"></span>
         <button class="btn btn-success" onclick="generateBatchReport()">生成测试报告</button>
+        <button class="btn btn-danger" onclick="deleteSelectedRecords()">删除选中</button>
     </div>
     <!-- 分页 -->
     <div id="recordPagination" style="display:none; margin-top:16px; text-align:center;"></div>
@@ -83,6 +90,82 @@
 
     var currentPage = 1;
     var currentTotalPages = 1;
+    var manageMode = false; // 管理模式：勾选框可见
+
+    // 切换管理模式
+    function toggleManageMode() {
+        manageMode = !manageMode;
+        var btn = document.getElementById('btnManageToggle');
+        var btnClear = document.getElementById('btnClearAll');
+        var thCheckbox = document.getElementById('thCheckbox');
+        if (manageMode) {
+            btn.textContent = '完成';
+            btn.classList.remove('btn-secondary');
+            btn.classList.add('btn-primary');
+            if (btnClear) btnClear.style.display = '';
+            if (thCheckbox) thCheckbox.style.display = '';
+        } else {
+            btn.textContent = '管理';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-secondary');
+            if (btnClear) btnClear.style.display = 'none';
+            if (thCheckbox) thCheckbox.style.display = 'none';
+            var batchAction = document.getElementById('batchAction');
+            if (batchAction) batchAction.style.display = 'none';
+        }
+        loadRecords();
+    }
+
+    // 删除选中记录
+    function deleteSelectedRecords() {
+        var selectedIds = [];
+        document.querySelectorAll('.record-checkbox:checked').forEach(function(cb) {
+            if (cb.value && !isNaN(Number(cb.value))) selectedIds.push(Number(cb.value));
+        });
+        if (selectedIds.length === 0) {
+            showToast('请先勾选要删除的记录', 'info');
+            return;
+        }
+        showConfirmDialog({
+            title: '删除记录',
+            message: '确定要删除选中的 ' + selectedIds.length + ' 条记录吗？此操作不可撤销。'
+        }, function(ok) {
+            if (!ok) return;
+            var done = 0;
+            var failed = 0;
+            selectedIds.forEach(function(rid) {
+                apiDelete('/api/records/' + rid).then(function() {
+                    done++;
+                    if (done + failed === selectedIds.length) {
+                        showToast('已删除 ' + done + ' 条记录' + (failed > 0 ? '，' + failed + '条失败' : ''), 'success');
+                        loadRecords();
+                    }
+                }).catch(function() {
+                    failed++;
+                    if (done + failed === selectedIds.length) {
+                        showToast('删除完成：成功' + done + '条，失败' + failed + '条', 'warning');
+                        loadRecords();
+                    }
+                });
+            });
+        });
+    }
+
+    // 清空全部记录
+    function clearAllRecords() {
+        showConfirmDialog({
+            title: '清空全部记录',
+            message: '确定要清空所有历史记录吗？此操作不可撤销。'
+        }, function(ok) {
+            if (!ok) return;
+            apiDelete('/api/records').then(function(data) {
+                showToast(data.message || '已清空所有记录', 'success');
+                loadRecords();
+            }).catch(function(err) {
+                showToast('清空失败: ' + err.message, 'error');
+            });
+        });
+    }
 
     // 页面加载初始化
     (function() {
@@ -388,8 +471,11 @@
             var rowNum = (currentPage - 1) * 15 + index + 1;
 
             var tr = document.createElement('tr');
+            var checkboxTd = manageMode
+                ? '<td><input type="checkbox" class="record-checkbox" value="' + escapeHtml(String(id)) + '"></td>'
+                : '';
             tr.innerHTML =
-                '<td><input type="checkbox" class="record-checkbox" value="' + escapeHtml(String(id)) + '"></td>' +
+                checkboxTd +
                 '<td>' + rowNum + '</td>' +
                 '<td>' + escapeHtml(sn) + '</td>' +
                 '<td>' + escapeHtml(versionDisplay) + '</td>' +
@@ -416,8 +502,20 @@
         html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
         // 行内代码 `text`
         html = html.replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>');
+        // 列表项 - 或 1.
+        html = html.replace(/^[\s]*[-]\s(.+)$/gm, '<li>$1</li>');
+        html = html.replace(/^[\s]*\d+[.]\s(.+)$/gm, '<li>$1</li>');
+        // 连续 li 包裹 ul
+        html = html.replace(/(<li>.*?<\/li>(?:<br>)?)+/g, function(m) {
+            return '<ul style="margin:4px 0 8px 0; padding-left:20px;">' + m.replace(/<br>/g, '') + '</ul>';
+        });
         // 换行
         html = html.replace(/\n/g, '<br>');
+        // 清理 h3/h4 后的 br
+        html = html.replace(/(<\/h[34]>)<br>/g, '$1');
+        // 清理 ul 前后的 br
+        html = html.replace(/<br>(<ul)/g, '$1');
+        html = html.replace(/(<\/ul>)<br>/g, '$1');
         return html;
     }
 
@@ -473,7 +571,7 @@
                             msgDiv.innerHTML = '<span style="background:#3b82f6; color:#fff; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;">' + escapeHtml(msg.content) + '</span>';
                         } else {
                             msgDiv.style.cssText = 'margin-bottom:8px;';
-                            msgDiv.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word; white-space:pre-wrap;">' + escapeHtml(msg.content) + '</span>';
+                            msgDiv.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;" class="md-content">' + renderMarkdown(msg.content) + '</span>';
                         }
                         chatBox.appendChild(msgDiv);
                     });
@@ -513,7 +611,7 @@
 
             var aiMsg = document.createElement('div');
             aiMsg.style.cssText = 'margin-bottom:8px;';
-            aiMsg.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word; white-space:pre-wrap;">' + escapeHtml(reply) + '</span>';
+            aiMsg.innerHTML = '<span style="background:#f1f5f9; color:#333; padding:6px 12px; border-radius:8px; display:inline-block; max-width:80%; word-break:break-word;" class="md-content">' + renderMarkdown(reply) + '</span>';
             chatBox.appendChild(aiMsg);
             chatBox.scrollTop = chatBox.scrollHeight;
         }).catch(function(err) {
