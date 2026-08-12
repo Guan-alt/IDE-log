@@ -6,6 +6,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# 项目根目录（ai_analyzer.py 位于 app/services/，上两级即项目根）
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 def _parse_sse_content(text):
     """
@@ -227,14 +230,21 @@ class AIAnalyzer:
         for path in log_paths:
             if not isinstance(path, str):
                 continue
-            if os.path.exists(path):
+            # 尝试路径解析：原始路径 → 项目根目录拼接（兼容历史相对路径记录）
+            resolved = path
+            if not os.path.exists(resolved) and not os.path.isabs(resolved):
+                # 相对路径在当前CWD下找不到，尝试拼接到项目根目录
+                alt = os.path.join(PROJECT_ROOT, path)
+                if os.path.exists(alt):
+                    resolved = alt
+            if os.path.exists(resolved):
                 try:
-                    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                    with open(resolved, 'r', encoding='utf-8', errors='replace') as f:
                         content = f.read()
-                    basename = os.path.basename(path).replace('.log', '')
+                    basename = os.path.basename(resolved).replace('.log', '')
                     log_contents.append({'name': basename, 'content': content})
                 except Exception as e:
-                    logger.error(f"读取日志文件 {path} 失败: {e}")
+                    logger.error(f"读取日志文件 {resolved} 失败: {e}")
             else:
                 logger.warning(f"日志文件不存在: {path}")
         return log_contents

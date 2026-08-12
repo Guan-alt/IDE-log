@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, current_app
 from app import db
 from app.models.models import Device, OtaRecord, Setting, TestTask
 from app.services.ota_client import OtaClient
@@ -51,45 +51,79 @@ def resolve_env_id(sn, env_id=None, user_id=None):
     return env_id
 
 def save_logs_for_record(record, device_sn):
-    """保存当前运行中的串口/JLink日志到文件，并更新record.log_paths"""
+    """保存采集器日志到文件，并更新record.log_paths
+    保存条件：采集器运行中 OR buffer中有数据（即使已停止但仍有日志也保存）
+    只截取该轮 OTA 期间(start_time)的日志，往前多留10秒上下文"""
     from app.api.serial import serial_manager, jlink_loggers
-    log_dir = os.path.join('logs', 'ota_logs', f"record_{record.id}")
+    # 使用绝对路径，避免不同线程/上下文CWD差异导致AI分析时找不到日志文件
+    log_dir = os.path.abspath(os.path.join('logs', 'ota_logs', f"record_{record.id}"))
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
     saved_paths = []
+    start_time = record.start_time
+    pre_seconds = 10  # 往前多留10秒上下文
 
-    # 串口日志：遍历所有运行中的采集器
-    serial_running = 0
-    for cid, s_logger in serial_manager.loggers.items():
-        if s_logger.is_running:
-            serial_running += 1
+    # 收集所有活跃的采集器，保存前做 drain-until-quiet，确保 buffer 数据完整
+    active_serial = [lg for lg in serial_manager.loggers.values() if lg.is_running]
+    user_id = record.user_id
+    user_jlink_loggers = jlink_loggers.get(user_id, {})
+    active_jlink = [lg for lg in user_jlink_loggers.values() if lg.is_running]
+    if active_serial or active_jlink:
+        for _ in range(3):
+            total_new = 0
+            for lg in active_serial:
+                total_new += lg.drain()
+            for lg in active_jlink:
+                total_new += lg.drain()
+            if total_new == 0:
+                break
+            time.sleep(0.3)
+        logger.info(f"记录 {record.id} drain完成，准备保存日志")
+
+    # 串口日志：保存所有有数据的采集器（不限于 is_running）
+    serial_count = 0
+    for cid, s_logger in list(serial_manager.loggers.items()):
+        try:
+            buf = s_logger.get_logs_since(start_time, pre_seconds) if start_time else s_logger.get_logs()
+        except Exception:
+            buf = ''
+        if s_logger.is_running or buf:
+            serial_count += 1
             try:
-                filepath = s_logger.save_to_file(log_dir)
+                if start_time:
+                    filepath = s_logger.save_to_file_since(log_dir, start_time, pre_seconds)
+                else:
+                    filepath = s_logger.save_to_file(log_dir)
                 saved_paths.append(filepath)
             except Exception as e:
                 logger.error(f"保存串口日志失败: {e}")
 
-    # JLink日志：当前用户的运行中采集器
-    user_id = record.user_id
-    user_jlink_loggers = jlink_loggers.get(user_id, {})
-    jlink_running = 0
-    for cid, j_logger in user_jlink_loggers.items():
-        if j_logger.is_running:
-            jlink_running += 1
+    # JLink日志：当前用户的所有有数据的采集器
+    jlink_count = 0
+    for cid, j_logger in list(user_jlink_loggers.items()):
+        try:
+            buf = j_logger.get_logs_since(start_time, pre_seconds) if start_time else j_logger.get_logs()
+        except Exception:
+            buf = ''
+        if j_logger.is_running or buf:
+            jlink_count += 1
             try:
-                filepath = j_logger.save_to_file(log_dir)
+                if start_time:
+                    filepath = j_logger.save_to_file_since(log_dir, start_time, pre_seconds)
+                else:
+                    filepath = j_logger.save_to_file(log_dir)
                 saved_paths.append(filepath)
             except Exception as e:
                 logger.error(f"保存JLink日志失败: {e}")
 
-    logger.info(f"记录 {record.id} save_logs: 串口运行中={serial_running} JLink运行中={jlink_running} 已保存={len(saved_paths)}")
+    logger.info(f"记录 {record.id} save_logs: 串口有数据={serial_count} JLink有数据={jlink_count} 已保存={len(saved_paths)} (时间窗口 start={start_time})")
 
     if saved_paths:
         record.log_paths = json.dumps(saved_paths, ensure_ascii=False)
         logger.info(f"记录 {record.id} 已保存 {len(saved_paths)} 个日志文件")
     else:
-        logger.warning(f"记录 {record.id} 无运行中的日志采集器，log_paths 为空")
+        logger.warning(f"记录 {record.id} 无日志采集器数据，log_paths 为空")
 
 def trigger_ai_analysis(record):
     """触发AI分析OTA失败日志"""
@@ -105,22 +139,33 @@ def trigger_ai_analysis(record):
         return None
 
 
-def trigger_cycle_ai_analysis(user_id, sn):
-    """循环OTA结束后，触发AI分析所有失败的leg记录（异步，避免阻塞主流程）"""
+def trigger_cycle_ai_analysis(user_id, sn, app=None):
+    """循环OTA结束后，触发AI分析所有失败的leg记录（异步，避免阻塞主流程）
+    app: 复用已有的 Flask app 实例，避免 create_app() 重复初始化导致数据库冲突"""
     task = cycling_tasks.get(user_id, {}).get(sn)
     if not task:
         return
 
     def _analyze():
         try:
-            from app import create_app
-            app = create_app()
-            with app.app_context():
+            # 优先复用传入的 app 实例，避免 create_app() 重复初始化
+            if app:
+                ctx = app.app_context()
+                ctx.push()
+            else:
+                from app import create_app
+                _app = create_app()
+                ctx = _app.app_context()
+                ctx.push()
+            try:
                 for rid in task.get('records', []):
                     rec = OtaRecord.query.get(rid)
                     if rec and rec.result and ('失败' in rec.result or 'OTA请求失败' in rec.result):
-                        if not rec.ai_analysis:
+                        # 允许重新分析之前失败的记录（ai_analysis 含错误信息时）
+                        if not rec.ai_analysis or '分析失败' in rec.ai_analysis:
                             trigger_ai_analysis(rec)
+            finally:
+                ctx.pop()
         except Exception as e:
             logger.error(f"循环OTA AI分析失败: {e}")
 
@@ -417,7 +462,7 @@ def _cycle_worker(user_id, sn):
                     if task['state'] in ('stopping', 'stopped'):
                         task['state'] = 'stopped'
                         logger.info(f"[循环OTA] {sn} 用户已停止，退出")
-                        trigger_cycle_ai_analysis(user_id, sn)
+                        trigger_cycle_ai_analysis(user_id, sn, app)
                         return
                     if task['state'] in ('done', 'failed'):
                         logger.info(f"[循环OTA] {sn} 已完成/失败，退出")
@@ -460,7 +505,7 @@ def _cycle_worker(user_id, sn):
                                 if task:
                                     task['state'] = 'stopped'
                                     task['current_record_id'] = None
-                            trigger_cycle_ai_analysis(user_id, sn)
+                            trigger_cycle_ai_analysis(user_id, sn, app)
                             return
 
                         # 检查是否用户已停止
@@ -469,7 +514,7 @@ def _cycle_worker(user_id, sn):
                             if not task or task['state'] in ('stopping', 'stopped'):
                                 task['state'] = 'stopped' if task else 'stopped'
                                 logger.info(f"[循环OTA] {sn} 等待期间用户已停止")
-                                trigger_cycle_ai_analysis(user_id, sn)
+                                trigger_cycle_ai_analysis(user_id, sn, app)
                                 return
 
                         # 2. 版本确认（无论网关报成功还是失败，都查版本）
@@ -492,7 +537,7 @@ def _cycle_worker(user_id, sn):
                             if not task or task['state'] in ('stopping', 'stopped'):
                                 task['state'] = 'stopped' if task else 'stopped'
                                 logger.info(f"[循环OTA] {sn} 版本确认后用户已停止")
-                                trigger_cycle_ai_analysis(user_id, sn)
+                                trigger_cycle_ai_analysis(user_id, sn, app)
                                 return
 
                         if version_confirmed:
@@ -504,6 +549,11 @@ def _cycle_worker(user_id, sn):
                                 save_logs_for_record(rec, sn)
                             db.session.commit()
                             logger.info(f"[循环OTA] {sn} 版本确认成功 record_id={current_record_id}")
+                            # 成功时重置重试计数
+                            with cycle_lock:
+                                task = cycling_tasks.get(user_id, {}).get(sn)
+                                if task:
+                                    task['retry_count'] = 0
                         else:
                             rec.result = 'OTA升级失败'
                             rec.fail_reason = f"版本确认失败: 设备版本未到达目标 {target_ver} (网关状态: {state})"
@@ -515,14 +565,24 @@ def _cycle_worker(user_id, sn):
                             db.session.commit()
                             logger.info(f"[循环OTA] {sn} 版本确认失败 record_id={current_record_id}")
 
+                            # 重试逻辑：失败后等待并重试同一leg，连续3次失败才停止
                             with cycle_lock:
                                 task = cycling_tasks.get(user_id, {}).get(sn)
-                                if task:
+                                if not task or task['state'] in ('stopping', 'stopped'):
+                                    if task:
+                                        task['state'] = 'stopped'
+                                    trigger_cycle_ai_analysis(user_id, sn, app)
+                                    return
+                                task['retry_count'] = task.get('retry_count', 0) + 1
+                                if task['retry_count'] >= 3:
                                     task['state'] = 'failed'
-                                    task['fail_reason'] = f"第{current_cycle}轮 {current_direction} 版本确认失败"
+                                    task['fail_reason'] = f"第{current_cycle}轮 {current_direction} 连续{task['retry_count']}次失败"
                                     task['current_record_id'] = None
-                            trigger_cycle_ai_analysis(user_id, sn)
-                            return
+                                    trigger_cycle_ai_analysis(user_id, sn, app)
+                                    return
+                                task['current_record_id'] = None
+                            logger.info(f"[循环OTA] {sn} 第{current_cycle}轮 {current_direction} 第{task['retry_count']}次失败，等待后重试...")
+                            continue
 
                         # 4. 清除当前记录ID
                         with cycle_lock:
@@ -540,7 +600,7 @@ def _cycle_worker(user_id, sn):
                                 task['state'] = 'stopped'
                                 task['current_record_id'] = None
                         logger.info(f"[循环OTA] {sn} 等待期间用户已停止")
-                        trigger_cycle_ai_analysis(user_id, sn)
+                        trigger_cycle_ai_analysis(user_id, sn, app)
                         return
 
                 # 6. 发起下一轮OTA
@@ -551,7 +611,12 @@ def _cycle_worker(user_id, sn):
                         return
 
                     # 推进方向
-                    if current_direction == 'upgrade':
+                    if task.get('retry_count', 0) > 0:
+                        # 重试模式：不推进方向，使用同一方向和目标
+                        next_direction = current_direction
+                        next_target = upgrade_version if current_direction == 'upgrade' else downgrade_version
+                        next_cycle = current_cycle
+                    elif current_direction == 'upgrade':
                         # 升级完成 → 切换到降级
                         task['current_direction'] = 'downgrade'
                         next_direction = 'downgrade'
@@ -569,7 +634,7 @@ def _cycle_worker(user_id, sn):
                             # 全部完成
                             task['state'] = 'done'
                             logger.info(f"[循环OTA] {sn} 全部{total_cycles}轮完成")
-                            trigger_cycle_ai_analysis(user_id, sn)
+                            trigger_cycle_ai_analysis(user_id, sn, app)
                             return
 
                 # 发起下一轮OTA
@@ -600,6 +665,11 @@ def _cycle_worker(user_id, sn):
                 elif ok and rid is None:
                     # 已是目标版本，跳过，等待后继续下一轮（避免快速循环）
                     logger.info(f"[循环OTA] {sn} {tag} 已是目标版本，跳过")
+                    # 重置重试计数
+                    with cycle_lock:
+                        task = cycling_tasks.get(user_id, {}).get(sn)
+                        if task:
+                            task['retry_count'] = 0
                     # 等待10秒后继续，避免快速循环
                     if not _interruptible_sleep(10, user_id, sn):
                         with cycle_lock:
@@ -608,22 +678,47 @@ def _cycle_worker(user_id, sn):
                                 task['state'] = 'stopped'
                                 task['current_record_id'] = None
                         logger.info(f"[循环OTA] {sn} 跳过等待期间用户已停止")
-                        trigger_cycle_ai_analysis(user_id, sn)
+                        trigger_cycle_ai_analysis(user_id, sn, app)
                         return
                     continue
                 else:
-                    # OTA请求失败
+                    # OTA请求失败 - 保存日志并重试
+                    if rid:
+                        with cycle_lock:
+                            task = cycling_tasks.get(user_id, {}).get(sn)
+                            if task:
+                                task['records'].append(rid)
+                        rec_fail = OtaRecord.query.get(rid)
+                        if rec_fail and not rec_fail.log_paths:
+                            save_logs_for_record(rec_fail, sn)
+                            db.session.commit()
+
                     with cycle_lock:
                         task = cycling_tasks.get(user_id, {}).get(sn)
-                        if task:
+                        if not task or task['state'] in ('stopping', 'stopped'):
+                            if task:
+                                task['state'] = 'stopped'
+                            trigger_cycle_ai_analysis(user_id, sn, app)
+                            return
+                        task['retry_count'] = task.get('retry_count', 0) + 1
+                        if task['retry_count'] >= 3:
                             task['state'] = 'failed'
-                            task['fail_reason'] = f"{next_direction}请求失败 (第{next_cycle}轮)"
+                            task['fail_reason'] = f"{next_direction}请求失败 连续{task['retry_count']}次 (第{next_cycle}轮)"
                             task['current_record_id'] = None
-                    trigger_cycle_ai_analysis(user_id, sn)
-                    return
+                            trigger_cycle_ai_analysis(user_id, sn, app)
+                            return
+                    logger.info(f"[循环OTA] {sn} {next_direction}请求失败(第{task['retry_count']}次)，等待后重试...")
+                    continue
 
     except Exception as e:
-        logger.error(f"[循环OTA] {sn} 后台线程异常: {e}", exc_info=True)
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"[循环OTA] {sn} 后台线程异常: {e}\n{tb}")
+        try:
+            with open('logs/cycle_worker_errors.log', 'a', encoding='utf-8') as f:
+                f.write(f"\n[{datetime.now()}] {sn} user={user_id} 异常: {e}\n{tb}\n")
+        except Exception:
+            pass
         with cycle_lock:
             task = cycling_tasks.get(user_id, {}).get(sn)
             if task:
@@ -677,7 +772,8 @@ def start_ota_cycle():
             'env_id': env_id,
             'user_id': user_id,
             'task_id': task_id,
-            'current_record_id': None
+            'current_record_id': None,
+            'retry_count': 0
         }
 
     # 发起第一轮升级；如果是"已是目标版本"则跳过并自动发起降级
@@ -712,16 +808,30 @@ def start_ota_cycle():
                 else:
                     cycling_tasks[user_id][sn]['state'] = 'done'
             else:
-                cycling_tasks[user_id][sn]['state'] = 'failed'
-                cycling_tasks[user_id][sn]['fail_reason'] = f"降级请求失败 (第1轮)"
+                # 降级请求失败 - 保存日志，由后台线程重试
+                if downgrade_rid:
+                    cycling_tasks[user_id][sn]['records'].append(downgrade_rid)
+                    rec_fail = OtaRecord.query.get(downgrade_rid)
+                    if rec_fail and not rec_fail.log_paths:
+                        save_logs_for_record(rec_fail, sn)
+                        db.session.commit()
+                cycling_tasks[user_id][sn]['retry_count'] = 1
+                logger.info(f"[循环OTA] {sn} 降级请求失败(第1次)，将由后台线程重试")
     else:
-        cycling_tasks[user_id][sn]['state'] = 'failed'
-        cycling_tasks[user_id][sn]['fail_reason'] = f"升级请求失败 (第1轮)"
+        # 升级请求失败 - 保存日志，由后台线程重试
+        if rid:
+            cycling_tasks[user_id][sn]['records'].append(rid)
+            rec_fail = OtaRecord.query.get(rid)
+            if rec_fail and not rec_fail.log_paths:
+                save_logs_for_record(rec_fail, sn)
+                db.session.commit()
+        cycling_tasks[user_id][sn]['retry_count'] = 1
+        logger.info(f"[循环OTA] {sn} 升级请求失败(第1次)，将由后台线程重试")
 
     final_state = cycling_tasks[user_id][sn]['state']
     # 循环立即完成或失败时触发AI分析
     if final_state in ('done', 'failed'):
-        trigger_cycle_ai_analysis(user_id, sn)
+        trigger_cycle_ai_analysis(user_id, sn, current_app._get_current_object())
     else:
         # 启动后台线程驱动循环
         threading.Thread(target=_cycle_worker, args=(user_id, sn), daemon=True).start()

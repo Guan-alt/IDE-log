@@ -3,7 +3,7 @@ import serial.tools.list_ports
 import threading
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,26 @@ class SerialLogger:
             except Exception:
                 # 串口被关闭或读取异常，退出循环
                 break
-    
+
+    def drain(self):
+        """主动做一次最终读取，将串口缓冲区中尚未被_read_loop读到的数据拉入buffer。
+        返回本次新读取的字符数。用于保存日志前确保数据完整。"""
+        if not self.serial_conn or not self.serial_conn.is_open:
+            return 0
+        try:
+            waiting = self.serial_conn.in_waiting
+            if waiting > 0:
+                data = self.serial_conn.read(waiting)
+                text = data.decode('utf-8', errors='replace')
+                now = datetime.now()
+                ts = f"[{now.strftime('%Y-%m-%d %H:%M:%S')}.{now.microsecond // 1000:03d}] "
+                with self._lock:
+                    self.buffer.append(ts + text)
+                return len(text)
+        except Exception:
+            pass
+        return 0
+
     def stop(self):
         """停止采集：先关闭串口连接，再等待线程退出"""
         self.is_running = False
@@ -75,7 +94,33 @@ class SerialLogger:
         """获取当前缓冲区的日志文本"""
         with self._lock:
             return ''.join(self.buffer)
-    
+
+    @staticmethod
+    def _parse_chunk_time(chunk):
+        """解析 chunk 开头的时间戳 [YYYY-MM-DD HH:MM:SS.fff]，失败返回 None"""
+        try:
+            end = chunk.find(']')
+            if chunk.startswith('[') and end > 0:
+                ts_str = chunk[1:end]
+                return datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f')
+        except Exception:
+            pass
+        return None
+
+    def get_logs_since(self, start_time, pre_seconds=10):
+        """获取时间戳 >= (start_time - pre_seconds) 的日志文本。
+        用于循环/单次 OTA 只截取该轮期间的日志，往前多留 pre_seconds 秒上下文"""
+        if not start_time:
+            return self.get_logs()
+        threshold = start_time - timedelta(seconds=pre_seconds)
+        with self._lock:
+            kept = []
+            for chunk in self.buffer:
+                ct = self._parse_chunk_time(chunk)
+                if ct is None or ct >= threshold:
+                    kept.append(chunk)
+            return ''.join(kept)
+
     def save_to_file(self, folder_path):
         """将缓冲区日志保存到文件"""
         if not os.path.exists(folder_path):
@@ -87,6 +132,19 @@ class SerialLogger:
             with self._lock:
                 f.write(''.join(self.buffer))
         logger.info(f"串口 {self.name} 日志已保存: {filepath}")
+        return filepath
+
+    def save_to_file_since(self, folder_path, start_time, pre_seconds=10):
+        """只保存时间戳 >= (start_time - pre_seconds) 的日志到文件"""
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        filename = f"serial_{self.name}_{self.device_sn}_{timestamp}.log"
+        filepath = os.path.join(folder_path, filename)
+        content = self.get_logs_since(start_time, pre_seconds)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        logger.info(f"串口 {self.name} 日志已保存(时间窗口 {start_time}): {filepath}")
         return filepath
 
 

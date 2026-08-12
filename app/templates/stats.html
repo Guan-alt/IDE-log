@@ -141,7 +141,14 @@
         apiGet('/api/tasks').then(function(data) {
             var tasks = (data && data.tasks) || [];
             var select = document.getElementById('statsTaskSelect');
+            // 清除旧选项（保留第一个"全部任务"占位项），避免页面缓存恢复后重复叠加
+            while (select.options.length > 1) {
+                select.remove(1);
+            }
+            var seen = {};
             tasks.forEach(function(t) {
+                if (!t.id || seen[t.id]) return;
+                seen[t.id] = true;
                 var opt = document.createElement('option');
                 opt.value = t.id;
                 opt.textContent = t.name + (t.status === '进行中' ? '' : ' [' + t.status + ']');
@@ -213,8 +220,15 @@
         apiGet('/api/devices').then(function(data) {
             var list = data.devices || data || [];
             var select = document.getElementById('statsDeviceSelect');
+            // 清除旧选项（保留第一个"全部设备"占位项），避免页面缓存恢复后重复叠加
+            while (select.options.length > 1) {
+                select.remove(1);
+            }
+            var seen = {};
             list.forEach(function(device) {
                 var sn = device.sn || device.serial_number || '';
+                if (!sn || seen[sn]) return;
+                seen[sn] = true;
                 var name = device.name || device.device_name || '';
                 var option = document.createElement('option');
                 option.value = sn;

@@ -487,6 +487,15 @@
     }
 
     function restoreOtaMode() {
+        // 如果有OTA正在运行，优先使用实际OTA类型，不依赖 ota_mode
+        if (localStorage.getItem('ota_cycle_active') === '1') {
+            switchOtaMode('cycle');
+            return;
+        }
+        if (localStorage.getItem('ota_active') === '1') {
+            switchOtaMode('single');
+            return;
+        }
         var savedMode = localStorage.getItem('ota_mode') || 'single';
         switchOtaMode(savedMode);
     }
@@ -539,6 +548,8 @@
             // 缓存设备列表（含关联环境），供选择设备时自动切换环境
             window._otaDeviceList = list;
             var select = document.getElementById('otaDeviceSelect');
+            // 记录当前选中的设备SN，重新填充后恢复（避免页面缓存恢复后被清空）
+            var savedSn = select.value || localStorage.getItem('ota_sn') || '';
             select.innerHTML = '<option value="">请选择设备</option>';
             list.forEach(function(device) {
                 var sn = device.sn || device.serial_number || '';
@@ -548,6 +559,15 @@
                 option.textContent = name ? (name + ' (' + sn + ')') : sn;
                 select.appendChild(option);
             });
+            // 恢复之前选中的设备（不触发change事件，版本列表已由restoreOtaState加载）
+            if (savedSn) {
+                for (var i = 0; i < select.options.length; i++) {
+                    if (select.options[i].value === savedSn) {
+                        select.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
         }).catch(function(err) {
             showToast('获取设备列表失败: ' + err.message, 'error');
         });

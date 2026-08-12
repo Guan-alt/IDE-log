@@ -6,9 +6,9 @@ logger = logging.getLogger(__name__)
 
 
 def _is_token_expired(exc):
-    """判断异常是否为 403 token 过期"""
+    """判断异常是否为 token 过期（401 Unauthorized 或 403 Forbidden）"""
     if isinstance(exc, requests.exceptions.HTTPError):
-        return exc.response is not None and exc.response.status_code == 403
+        return exc.response is not None and exc.response.status_code in (401, 403)
     return False
 
 
