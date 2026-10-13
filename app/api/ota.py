@@ -1069,10 +1069,16 @@ def check_ota_status(sn):
 
     # 查询最新记录，判断是否正在升级中
     record = OtaRecord.query.filter_by(device_sn=sn, user_id=user_id).order_by(OtaRecord.id.desc()).first()
-    record_in_progress = record and record.result == 'OTA升级中' if record else False
+    record_in_progress = bool(record and record.result == 'OTA升级中')
+    # state 非空说明 OTA 服务确实返回了该设备的升级状态
+    has_ota_state = bool(state)
 
-    # OTA正在进行的判断：进度未完成 或 记录标记为升级中
-    if not is_finished or record_in_progress:
+    # OTA正在进行的判断：必须存在“确有其事且未完成”的信号，满足其一：
+    #   1) 服务端返回了该设备的升级状态（state 非空）且尚未完成；
+    #   2) 数据库最新记录标记为“OTA升级中”（覆盖刚发起、服务端尚未登记的短暂窗口）。
+    # 若 state 为空（服务端没有该设备的升级记录，即设备空闲），不能因为 is_finished 默认为
+    # False 就判定为正在升级，否则一进入页面就会出现“进度条自动跑”的假象。
+    if not is_finished and (has_ota_state or record_in_progress):
         return jsonify({
             'active': True,
             'mode': 'single',
