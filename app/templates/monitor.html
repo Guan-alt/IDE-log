@@ -352,6 +352,11 @@
     var currentLogConfigs = [];
     var currentOtaSn = null;
     var currentOtaMode = 'single';
+    // OTA 进度与循环状态轮询间隔（毫秒），统一由此常量控制，避免散落的魔法数字
+    var OTA_PROGRESS_POLL_MS = 8000;
+    // 标记当前正在进行的 /api/ota/check-status 请求的 SN，避免页面恢复时
+    // restoreOtaState 直接调用与设备 change 事件触发的间接调用并发重复请求。
+    var otaCheckInFlightSn = null;
 
     // 页面清理函数（切换页面时清除定时器）
     pageCleanupFn = function() {
@@ -487,15 +492,10 @@
     }
 
     function restoreOtaMode() {
-        // 如果有OTA正在运行，优先使用实际OTA类型，不依赖 ota_mode
-        if (localStorage.getItem('ota_cycle_active') === '1') {
-            switchOtaMode('cycle');
-            return;
-        }
-        if (localStorage.getItem('ota_active') === '1') {
-            switchOtaMode('single');
-            return;
-        }
+        // 仅恢复 UI tab 选择；进度态的实际模式由 checkDeviceOtaState 后端确认后
+        // 通过 doRestoreOtaProgress → switchOtaMode 设置，避免误信残留的 active 标记
+        // 导致 tab 抖动（cycle_active/ota_active 标记可能残留但实际无运行中 OTA）。
+        // switchOtaMode 每次调用都会写 ota_mode，因此 ota_mode 始终是最近一次使用的模式。
         var savedMode = localStorage.getItem('ota_mode') || 'single';
         switchOtaMode(savedMode);
     }
@@ -656,7 +656,14 @@
         if (currentOtaSn === sn && progressTimer) {
             return;
         }
+        // 同一 SN 的 check-status 请求进行中则跳过，避免页面恢复时并发重复请求
+        // （restoreOtaState 直接调用 + 设备 change 事件触发的间接调用可能竞态）
+        if (otaCheckInFlightSn === sn) {
+            return;
+        }
+        otaCheckInFlightSn = sn;
         apiGet('/api/ota/check-status/' + sn).then(function(data) {
+            otaCheckInFlightSn = null;
             if (data.token_expired) {
                 showTokenExpiredModal();
                 return;
@@ -678,7 +685,9 @@
                 enterIdleUI();
             }
         }).catch(function() {
+            otaCheckInFlightSn = null;
             // 查询失败，保守处理：保持当前UI
+            console.warn('check-status fetch failed', sn);
         });
     }
 
@@ -839,25 +848,15 @@
     }
 
     // 恢复OTA状态（页面跳转回来后）
+    // 统一通过后端 /api/ota/check-status/<sn> 确认 OTA 是否仍在运行，
+    // 不再仅凭 localStorage 中的 ota_active / ota_cycle_active 残留标记直接进入运行态。
+    // 后端返回 active=true 时由 checkDeviceOtaState → doRestoreOtaProgress 负责进入运行态并启动轮询；
+    // 后端返回 active=false 时由 checkDeviceOtaState → enterIdleUI 清理残留标记并回到空闲态。
     function restoreOtaState() {
         var savedSn = localStorage.getItem('ota_sn');
         if (!savedSn) return;
 
-        var isCycleActive = localStorage.getItem('ota_cycle_active') === '1';
-        var isSingleActive = localStorage.getItem('ota_active') === '1';
-        if (!isCycleActive && !isSingleActive) {
-            // localStorage 无标记，但仍主动查询后端（防止标记丢失但OTA仍在运行）
-            checkDeviceOtaState(savedSn);
-            return;
-        }
-
-        // 先恢复正确的OTA模式（不依赖 ota_mode，而是用实际的 OTA 类型）
-        var actualMode = isCycleActive ? 'cycle' : 'single';
-        localStorage.setItem('ota_mode', actualMode);
-        switchOtaMode(actualMode);
-
-        // 立即恢复 OTA 进度轮询（不等设备列表，直接用 savedSn）
-        doRestoreOtaProgress(savedSn, isCycleActive);
+        checkDeviceOtaState(savedSn);
 
         // 异步恢复设备下拉选择（列表加载完后再选）
         var select = document.getElementById('otaDeviceSelect');
@@ -901,22 +900,23 @@
                     localStorage.removeItem('ota_cycle_active');
                 }
             }).catch(function() {
-                // API 失败，仍尝试恢复进度轮询
-                currentOtaSn = savedSn;
-                enterRunningUI();
-                var overview = document.getElementById('cycleOverview');
-                overview.style.display = 'block';
-                overview.innerHTML = '循环压测进行中 &nbsp; 正在恢复详情...';
-                startProgressPolling(savedSn);
-                startCycleStatusPolling(savedSn);
+                // 循环状态查询接口失败：保守处理，不进入运行态、不启动轮询，
+                // 避免在未知状态下让进度条动画误启动（防止"进入页面进度条自动跑"的回归）。
+                console.warn('cycle-status fetch failed', savedSn);
+                if (typeof showToast === 'function') {
+                    showToast('循环状态查询失败，请刷新重试', 'error');
+                }
+                // 保持当前 UI（多数为空闲态），不启动进度/循环状态轮询
             });
         } else {
+            // 单次模式分支：此处仅由 checkDeviceOtaState 在后端确认 data.active=true 且 mode==='single' 后调用，
+            // 因此 enterRunningUI + startProgressPolling 已过验证，可安全启动。
             switchOtaMode('single');
             currentOtaSn = savedSn;
             enterRunningUI();
             document.getElementById('cycleOverview').style.display = 'none';
             document.getElementById('progressStatus').textContent = '正在恢复升级状态...';
-            fetchProgress(savedSn);  // 立即获取一次进度
+            // 不在此处直接调 fetchProgress：startProgressPolling 内部会立即首发一次，避免重复请求
             startProgressPolling(savedSn);
         }
     }
@@ -974,13 +974,13 @@
     function startProgressPolling(sn) {
         if (progressTimer) clearInterval(progressTimer);
         fetchProgress(sn);
-        progressTimer = setInterval(function() { fetchProgress(sn); }, 5000);
+        progressTimer = setInterval(function() { fetchProgress(sn); }, OTA_PROGRESS_POLL_MS);
     }
 
     function startCycleStatusPolling(sn) {
         if (cycleStatusTimer) clearInterval(cycleStatusTimer);
         fetchCycleStatus(sn);
-        cycleStatusTimer = setInterval(function() { fetchCycleStatus(sn); }, 5000);
+        cycleStatusTimer = setInterval(function() { fetchCycleStatus(sn); }, OTA_PROGRESS_POLL_MS);
     }
 
     function fetchCycleStatus(sn) {
